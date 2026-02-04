@@ -82,14 +82,75 @@ src/
 4. Enable Storage
 5. Copy your web app config to the `.env` file
 
+## Admin Panel
+
+The admin panel is a web application for moderating land plots and users.
+
+### Running the Admin Panel
+
+```bash
+cd admin
+npm install
+npm run dev
+```
+
+The admin panel will be available at http://localhost:5173
+
+### Admin Configuration
+
+Admin emails are configured in two places:
+
+1. **Admin Panel** (`admin/src/config/adminConfig.ts`):
+```typescript
+export const ADMIN_EMAILS: string[] = [
+  'admin@landplots.com',
+  'moderator@landplots.com',
+  // Add your admin emails here
+];
+```
+
+2. **Firestore Security Rules** (`firestore.rules`):
+```javascript
+function isAdmin() {
+  return isAuthenticated() && 
+    request.auth.token.email in [
+      'admin@landplots.com',
+      'moderator@landplots.com'
+    ];
+}
+```
+
+Both lists must match for proper admin access.
+
+### Admin Features
+
+- **Plots Moderation**: View all plots, approve/hide/set pending status
+- **Users Moderation**: View all users, block/unblock users
+- **Reports**: View and resolve user reports
+
+### Moderation Flow
+
+1. New plots are created with `status: 'pending'`
+2. Mobile app only displays plots with `status: 'approved'`
+3. Admins can approve plots to make them visible
+4. Admins can hide plots to remove them from the mobile app
+5. Blocked users cannot create new plots or send messages
+
+## Firestore Security Rules
+
+Deploy the security rules to Firebase:
+
+```bash
+firebase deploy --only firestore:rules
+```
+
 ## MVP Scope
 
 This is a strict MVP with the following limitations:
-- No admin panel
 - No payment processing
 - No analytics
 - No legal deep checks
-- No web version (mobile only)
+- No web version for mobile app (mobile only)
 
 ## Demo Mode
 
