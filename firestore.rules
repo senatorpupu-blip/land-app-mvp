@@ -1,0 +1,138 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to check if user is admin
+    // Admin emails are hardcoded - update this list as needed
+    function isAdmin() {
+      return isAuthenticated() && 
+        request.auth.token.email in [
+          'admin@landplots.com',
+          'moderator@landplots.com'
+        ];
+    }
+    
+    // Helper function to check if user is the owner
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Helper function to check if user is blocked
+    function isNotBlocked() {
+      return !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked != true;
+    }
+    
+    // Plots collection
+    match /plots/{plotId} {
+      // Anyone can read approved plots
+      // Owners can read their own plots regardless of status
+      // Admins can read all plots
+      allow read: if isAdmin() || 
+        resource.data.status == 'approved' ||
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      
+      // Authenticated non-blocked users can create plots (status will be 'pending')
+      allow create: if isAuthenticated() && 
+        isNotBlocked() &&
+        request.resource.data.ownerId == request.auth.uid &&
+        request.resource.data.status == 'pending';
+      
+      // Owners can update their own plots (except status field)
+      // Admins can update any plot including status
+      allow update: if isAdmin() ||
+        (isAuthenticated() && 
+         isNotBlocked() &&
+         resource.data.ownerId == request.auth.uid &&
+         request.resource.data.status == resource.data.status);
+      
+      // Only owners can delete their own plots, or admins
+      allow delete: if isAdmin() ||
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      // Users can read their own profile
+      // Admins can read all profiles
+      allow read: if isAdmin() || isOwner(userId);
+      
+      // Users can create their own profile
+      allow create: if isOwner(userId);
+      
+      // Users can update their own profile (except isBlocked)
+      // Admins can update any profile including isBlocked
+      allow update: if isAdmin() ||
+        (isOwner(userId) && 
+         request.resource.data.isBlocked == resource.data.isBlocked);
+      
+      // Only admins can delete users
+      allow delete: if isAdmin();
+    }
+    
+    // Chats collection
+    match /chats/{chatId} {
+      // Participants can read their chats
+      allow read: if isAuthenticated() && 
+        isNotBlocked() &&
+        (resource.data.ownerId == request.auth.uid || 
+         resource.data.clientId == request.auth.uid);
+      
+      // Authenticated non-blocked users can create chats
+      allow create: if isAuthenticated() && 
+        isNotBlocked() &&
+        (request.resource.data.ownerId == request.auth.uid || 
+         request.resource.data.clientId == request.auth.uid);
+      
+      // Participants can update their chats
+      allow update: if isAuthenticated() && 
+        isNotBlocked() &&
+        (resource.data.ownerId == request.auth.uid || 
+         resource.data.clientId == request.auth.uid);
+      
+      // Messages subcollection
+      match /messages/{messageId} {
+        // Chat participants can read messages
+        allow read: if isAuthenticated() && 
+          isNotBlocked() &&
+          (get(/databases/$(database)/documents/chats/$(chatId)).data.ownerId == request.auth.uid ||
+           get(/databases/$(database)/documents/chats/$(chatId)).data.clientId == request.auth.uid);
+        
+        // Chat participants can create messages
+        allow create: if isAuthenticated() && 
+          isNotBlocked() &&
+          request.resource.data.senderId == request.auth.uid &&
+          (get(/databases/$(database)/documents/chats/$(chatId)).data.ownerId == request.auth.uid ||
+           get(/databases/$(database)/documents/chats/$(chatId)).data.clientId == request.auth.uid);
+        
+        // Sender can update their own messages (for read status)
+        allow update: if isAuthenticated() && 
+          isNotBlocked() &&
+          (get(/databases/$(database)/documents/chats/$(chatId)).data.ownerId == request.auth.uid ||
+           get(/databases/$(database)/documents/chats/$(chatId)).data.clientId == request.auth.uid);
+      }
+    }
+    
+    // Reports collection
+    match /reports/{reportId} {
+      // Only admins can read reports
+      allow read: if isAdmin();
+      
+      // Authenticated non-blocked users can create reports
+      allow create: if isAuthenticated() && 
+        isNotBlocked() &&
+        request.resource.data.reporterId == request.auth.uid;
+      
+      // Only admins can update reports
+      allow update: if isAdmin();
+      
+      // Only admins can delete reports
+      allow delete: if isAdmin();
+    }
+  }
+}

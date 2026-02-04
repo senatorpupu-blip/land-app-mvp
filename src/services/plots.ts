@@ -19,7 +19,7 @@ import { LandPlot, PlotFilters } from '../types';
 const PLOTS_COLLECTION = 'plots';
 
 export const createPlot = async (
-  plotData: Omit<LandPlot, 'id' | 'createdAt' | 'updatedAt' | 'totalPrice'>
+  plotData: Omit<LandPlot, 'id' | 'createdAt' | 'updatedAt' | 'totalPrice' | 'status'>
 ): Promise<string> => {
   try {
     const totalPrice = plotData.area * plotData.pricePerSotka;
@@ -27,6 +27,7 @@ export const createPlot = async (
     const docRef = await addDoc(collection(db, PLOTS_COLLECTION), {
       ...plotData,
       totalPrice,
+      status: 'pending',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -115,6 +116,9 @@ export const getPlots = async (filters?: PlotFilters): Promise<LandPlot[]> => {
         updatedAt: data.updatedAt?.toDate() || new Date(),
       } as LandPlot;
     });
+    
+    // Only show approved plots to mobile app users
+    plots = plots.filter(p => p.status === 'approved');
     
     // Apply filters in memory
     if (filters) {
