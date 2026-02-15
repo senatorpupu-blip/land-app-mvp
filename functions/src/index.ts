@@ -238,3 +238,139 @@ export const createLandPlot = functions.https.onCall(
     }
   }
 );
+
+interface RecomputePricingRequest {
+  plotId: string;
+}
+
+interface RecomputePricingResponse {
+  success: boolean;
+  pricing?: ComputedPricing;
+  error?: string;
+}
+
+export const recomputePricingForPlot = functions.https.onCall(
+  async (data: RecomputePricingRequest, context): Promise<RecomputePricingResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'User must be authenticated.'
+      );
+    }
+
+    const userId = context.auth.uid;
+
+    if (!data.plotId || typeof data.plotId !== 'string') {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Plot ID is required.'
+      );
+    }
+
+    const plotDoc = await db.collection(PLOTS_COLLECTION).doc(data.plotId).get();
+    
+    if (!plotDoc.exists) {
+      throw new functions.https.HttpsError(
+        'not-found',
+        'Plot not found.'
+      );
+    }
+
+    const plotData = plotDoc.data();
+    
+    if (!plotData) {
+      throw new functions.https.HttpsError(
+        'internal',
+        'Failed to read plot data.'
+      );
+    }
+
+    const userDoc = await db.collection(USERS_COLLECTION).doc(userId).get();
+    const isAdmin = userDoc.exists && userDoc.data()?.role === 'admin';
+    
+    if (plotData.ownerId !== userId && !isAdmin) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'You do not have permission to update this plot.'
+      );
+    }
+
+    const category = plotData.category as LandCategory | undefined;
+    
+    if (!category) {
+      return {
+        success: true,
+        pricing: undefined,
+      };
+    }
+
+    const location = plotData.location;
+    if (!location || typeof location.latitude !== 'number' || typeof location.longitude !== 'number') {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Plot location is invalid.'
+      );
+    }
+
+    const { oblastCenter, distance } = findNearestOblastCenter(
+      location.latitude,
+      location.longitude
+    );
+    
+    const pricingZone = determinePricingZone(distance);
+    
+    const oblastFromCadastral = plotData.cadastralNumber 
+      ? extractOblastFromCadastral(plotData.cadastralNumber) 
+      : null;
+    const oblastId = plotData.oblast || oblastFromCadastral || oblastCenter.id;
+    
+    const pricingResult = await getPricingRuleWithFallback(
+      db,
+      oblastId,
+      category,
+      pricingZone
+    );
+    
+    const area = plotData.area || 0;
+    const pricePerSotka = plotData.pricePerSotka || 0;
+    
+    const recommendedMinUSD = pricingResult.rule.minUSDPerSotka * area;
+    const recommendedMaxUSD = pricingResult.rule.maxUSDPerSotka * area;
+    const marketStatus = determineMarketStatus(
+      pricePerSotka,
+      pricingResult.rule.minUSDPerSotka,
+      pricingResult.rule.maxUSDPerSotka,
+      pricingResult.rule.avgUSDPerSotka
+    );
+    
+    const pricing: ComputedPricing = {
+      oblastId: oblastCenter.id,
+      distanceToOblastCenter: distance,
+      pricingZone,
+      recommendedMinUSD,
+      recommendedMaxUSD,
+      marketStatus,
+    };
+
+    const totalPrice = area * pricePerSotka;
+
+    await db.collection(PLOTS_COLLECTION).doc(data.plotId).update({
+      pricing,
+      totalPrice,
+      status: 'pending',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    functions.logger.info('Pricing recomputed for plot', {
+      plotId: data.plotId,
+      userId,
+      pricingZone,
+      marketStatus,
+    });
+
+    return {
+      success: true,
+      pricing,
+    };
+  }
+);

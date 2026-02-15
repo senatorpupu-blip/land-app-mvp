@@ -69,19 +69,32 @@ export interface LandPlot {
   ownerPhone: string;
   isInvestmentPlot: boolean;
   isCreditAvailable: boolean;
-  status: 'pending' | 'approved' | 'hidden';
+  status: 'draft' | 'pending' | 'approved' | 'rejected' | 'deleted';
+  rejectReason?: string;
+  approvedAt?: Date;
+  rejectedAt?: Date;
+  deletedAt?: Date;
+  approvedBy?: string;
+  rejectedBy?: string;
   // Computed pricing fields
   pricing?: ComputedPricing;
   createdAt: Date;
   updatedAt: Date;
 }
 
+// User Role Types
+export type UserRole = 'buyer' | 'seller' | 'admin';
+
 // User Types
 export interface User {
   id: string;
-  phoneNumber: string;
+  phoneNumber?: string;
+  email?: string;
   displayName?: string;
+  role: UserRole;
+  isBlocked?: boolean;
   createdAt: Date;
+  updatedAt?: Date;
 }
 
 // Chat Types

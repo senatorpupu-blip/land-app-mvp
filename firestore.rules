@@ -2,45 +2,46 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Helper function to check if user is authenticated
     function isAuthenticated() {
       return request.auth != null;
     }
     
-    // Helper function to check if user is admin
-    // Admin emails are hardcoded - update this list as needed
-    function isAdmin() {
-      return isAuthenticated() && 
-        request.auth.token.email in [
-          'admin@landplots.com',
-          'moderator@landplots.com'
-        ];
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
     
-    // Helper function to check if user is the owner
+    function isAdmin() {
+      return isAuthenticated() && getUserData().role == 'admin';
+    }
+    
+    function isSeller() {
+      return isAuthenticated() && (getUserData().role == 'seller' || getUserData().role == 'admin');
+    }
+    
+    function isBuyer() {
+      return isAuthenticated();
+    }
+    
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
     
-    // Helper function to check if user is blocked
     function isNotBlocked() {
       return !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked != true;
+        getUserData().isBlocked != true;
     }
     
     // Plots collection
     // NOTE: Direct create is DISABLED - use createLandPlot Cloud Function instead
-    // This ensures all computed pricing fields are calculated server-side
     match /plots/{plotId} {
-      // Anyone can read approved plots
-      // Owners can read their own plots regardless of status
+      // Buyers can read approved plots
+      // Sellers can read their own plots (any status)
       // Admins can read all plots
       allow read: if isAdmin() || 
-        resource.data.status == 'approved' ||
+        (resource.data.status == 'approved' && resource.data.status != 'deleted') ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
       
       // Direct create is DISABLED - must use createLandPlot Cloud Function
-      // Cloud Functions use Admin SDK which bypasses security rules
       allow create: if false;
       
       // Owners can update their own plots (except status field)
@@ -49,9 +50,11 @@ service cloud.firestore {
         (isAuthenticated() && 
          isNotBlocked() &&
          resource.data.ownerId == request.auth.uid &&
-         request.resource.data.status == resource.data.status);
+         request.resource.data.status == resource.data.status &&
+         request.resource.data.ownerId == resource.data.ownerId);
       
-      // Only owners can delete their own plots, or admins
+      // Only owners can soft-delete their own plots, or admins
+      // Soft delete: set status="deleted"
       allow delete: if isAdmin() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
     }
@@ -62,13 +65,16 @@ service cloud.firestore {
       // Admins can read all profiles
       allow read: if isAdmin() || isOwner(userId);
       
-      // Users can create their own profile
-      allow create: if isOwner(userId);
+      // Users can create their own profile on first login
+      allow create: if isOwner(userId) && 
+        request.resource.data.role in ['buyer', 'seller'] &&
+        request.resource.data.isBlocked == false;
       
-      // Users can update their own profile (except isBlocked)
-      // Admins can update any profile including isBlocked
+      // Users can update their own profile (except role and isBlocked)
+      // Admins can update any profile including role and isBlocked
       allow update: if isAdmin() ||
         (isOwner(userId) && 
+         request.resource.data.role == resource.data.role &&
          request.resource.data.isBlocked == resource.data.isBlocked);
       
       // Only admins can delete users
@@ -144,7 +150,7 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
     
-    // Pricing Rules collection
+    // Pricing Rules collection (read-only reference data)
     match /pricingRules/{ruleId} {
       // Anyone can read pricing rules (needed for price calculations)
       allow read: if true;

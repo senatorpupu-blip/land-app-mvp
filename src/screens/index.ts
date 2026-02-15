@@ -5,3 +5,7 @@ export { MapScreen } from './MapScreen';
 export { ChatListScreen } from './ChatListScreen';
 export { ChatScreen } from './ChatScreen';
 export { ProfileScreen } from './ProfileScreen';
+export { AddPlotScreen } from './AddPlotScreen';
+export { MyListingsScreen } from './MyListingsScreen';
+export { EditPlotScreen } from './EditPlotScreen';
+export { AdminScreen } from './AdminScreen';

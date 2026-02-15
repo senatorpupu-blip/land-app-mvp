@@ -108,7 +108,59 @@ export const deletePlot = async (plotId: string): Promise<void> => {
   try {
     await deleteDoc(doc(db, PLOTS_COLLECTION, plotId));
   } catch (error) {
-        throw error;
+    throw error;
+  }
+};
+
+export const softDeletePlot = async (plotId: string): Promise<void> => {
+  try {
+    const plotRef = doc(db, PLOTS_COLLECTION, plotId);
+    await updateDoc(plotRef, {
+      status: 'deleted',
+      deletedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const getPlotsByOwnerAndStatus = async (
+  ownerId: string,
+  status?: 'draft' | 'pending' | 'approved' | 'rejected' | 'deleted'
+): Promise<LandPlot[]> => {
+  try {
+    let q;
+    if (status) {
+      q = query(
+        collection(db, PLOTS_COLLECTION),
+        where('ownerId', '==', ownerId),
+        where('status', '==', status),
+        orderBy('createdAt', 'desc')
+      );
+    } else {
+      q = query(
+        collection(db, PLOTS_COLLECTION),
+        where('ownerId', '==', ownerId),
+        orderBy('createdAt', 'desc')
+      );
+    }
+    
+    const querySnapshot = await getDocs(q);
+    
+    return querySnapshot.docs
+      .map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          createdAt: data.createdAt?.toDate() || new Date(),
+          updatedAt: data.updatedAt?.toDate() || new Date(),
+        } as LandPlot;
+      })
+      .filter(plot => plot.status !== 'deleted');
+  } catch (error) {
+    throw error;
   }
 };
 
