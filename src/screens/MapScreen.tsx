@@ -6,12 +6,14 @@ import {
   TouchableOpacity,
   SafeAreaView,
   Dimensions,
-  Platform
+  Platform,
+  Switch
 } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE, UrlTile } from 'react-native-maps';
 import { theme } from '../config/theme';
 import { FilterModal } from '../components';
 import { LandPlot, PlotFilters } from '../types';
+import { getPricingZoneLabel } from '../utils/pricingZones';
 
 interface MapScreenProps {
   navigation: any;
@@ -38,6 +40,7 @@ const MOCK_PLOTS: LandPlot[] = [
     ownerPhone: '+1234567890',
     isInvestmentPlot: true,
     isCreditAvailable: true,
+    status: 'approved',
     createdAt: new Date(),
     updatedAt: new Date(),
   },
@@ -58,6 +61,7 @@ const MOCK_PLOTS: LandPlot[] = [
     ownerPhone: '+1234567891',
     isInvestmentPlot: false,
     isCreditAvailable: true,
+    status: 'approved',
     createdAt: new Date(),
     updatedAt: new Date(),
   },
@@ -78,6 +82,7 @@ const MOCK_PLOTS: LandPlot[] = [
     ownerPhone: '+1234567892',
     isInvestmentPlot: true,
     isCreditAvailable: false,
+    status: 'approved',
     createdAt: new Date(),
     updatedAt: new Date(),
   },
@@ -98,6 +103,7 @@ const MOCK_PLOTS: LandPlot[] = [
     ownerPhone: '+1234567893',
     isInvestmentPlot: false,
     isCreditAvailable: false,
+    status: 'approved',
     createdAt: new Date(),
     updatedAt: new Date(),
   },
@@ -105,12 +111,18 @@ const MOCK_PLOTS: LandPlot[] = [
 
 const REGIONS = ['North Valley', 'East Hills', 'South River', 'West Mountains'];
 
-const INITIAL_REGION = {
-  latitude: 40.7128,
-  longitude: -74.006,
-  latitudeDelta: 0.05,
-  longitudeDelta: 0.05,
+// Ukraine center coordinates (Kyiv)
+const UKRAINE_CENTER = {
+  latitude: 48.3794,
+  longitude: 31.1656,
+  latitudeDelta: 8.0,
+  longitudeDelta: 8.0,
 };
+
+// Ukrainian cadastral map tile URL
+const CADASTRAL_TILE_URL = 'https://map.land.gov.ua/geowebcache/service/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&FORMAT=image/png&TRANSPARENT=true&LAYERS=kadastr&WIDTH=256&HEIGHT=256&SRS=EPSG:3857&BBOX={minX},{minY},{maxX},{maxY}';
+
+const INITIAL_REGION = UKRAINE_CENTER;
 
 export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
   const [plots, setPlots] = useState<LandPlot[]>(MOCK_PLOTS);
@@ -118,6 +130,7 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
   const [filters, setFilters] = useState<PlotFilters>({});
   const [showFilters, setShowFilters] = useState(false);
   const [selectedPlot, setSelectedPlot] = useState<LandPlot | null>(null);
+  const [showCadastralOverlay, setShowCadastralOverlay] = useState(false);
   const mapRef = useRef<MapView>(null);
 
   const applyFilters = (newFilters: PlotFilters) => {
@@ -195,6 +208,16 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
           initialRegion={INITIAL_REGION}
           provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
         >
+          {/* Ukrainian cadastral overlay */}
+          {showCadastralOverlay && (
+            <UrlTile
+              urlTemplate="https://map.land.gov.ua/geowebcache/service/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&FORMAT=image/png&TRANSPARENT=true&LAYERS=kadastr&WIDTH=256&HEIGHT=256&SRS=EPSG:3857&BBOX={minX},{minY},{maxX},{maxY}"
+              maximumZ={19}
+              flipY={false}
+              zIndex={1}
+            />
+          )}
+          
           {filteredPlots.map((plot) => (
             <Marker
               key={plot.id}
@@ -256,6 +279,15 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: theme.colors.zoneC }]} />
             <Text style={styles.legendText}>Zone C</Text>
+          </View>
+          <View style={styles.cadastralToggle}>
+            <Text style={styles.legendText}>Cadastral</Text>
+            <Switch
+              value={showCadastralOverlay}
+              onValueChange={setShowCadastralOverlay}
+              trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
+              thumbColor={theme.colors.text}
+            />
           </View>
         </View>
       </View>
@@ -402,5 +434,14 @@ const styles = StyleSheet.create({
   legendText: {
     color: theme.colors.text,
     fontSize: theme.fontSize.xs,
+  },
+  cadastralToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
   },
 });

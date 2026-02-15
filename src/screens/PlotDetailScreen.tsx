@@ -14,6 +14,8 @@ import {
 import { theme } from '../config/theme';
 import { Button } from '../components';
 import { LandPlot } from '../types';
+import { getPublicCadastralMapUrl, validateCadastralFormat } from '../utils/cadastral';
+import { getPricingZoneLabel, getMarketStatusLabel } from '../utils/pricingZones';
 
 const { width } = Dimensions.get('window');
 
@@ -69,6 +71,19 @@ export const PlotDetailScreen = ({ route, navigation }: any) => {
       'Your credit request has been submitted. A representative will contact you shortly.',
       [{ text: 'OK' }]
     );
+  };
+
+  const handleOpenCadastralMap = () => {
+    if (plot.cadastralNumber && validateCadastralFormat(plot.cadastralNumber)) {
+      const url = getPublicCadastralMapUrl(plot.cadastralNumber);
+      Linking.openURL(url);
+    } else {
+      Alert.alert(
+        'Invalid Cadastral Number',
+        'The cadastral number format is invalid. Cannot open cadastral map.',
+        [{ text: 'OK' }]
+      );
+    }
   };
 
   return (
@@ -165,7 +180,48 @@ export const PlotDetailScreen = ({ route, navigation }: any) => {
                 </Text>
               </View>
             </View>
+            <TouchableOpacity 
+              style={styles.cadastralMapButton}
+              onPress={handleOpenCadastralMap}
+            >
+              <Text style={styles.cadastralMapButtonText}>Open in Public Cadastral Map</Text>
+            </TouchableOpacity>
           </View>
+
+          {/* Pricing Zone Info */}
+          {plot.pricing && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Pricing Information</Text>
+              <View style={styles.pricingInfoContainer}>
+                <View style={styles.pricingInfoRow}>
+                  <Text style={styles.pricingLabel}>Distance to Oblast Center:</Text>
+                  <Text style={styles.pricingValue}>{plot.pricing.distanceToOblastCenter} km</Text>
+                </View>
+                <View style={styles.pricingInfoRow}>
+                  <Text style={styles.pricingLabel}>Pricing Zone:</Text>
+                  <Text style={styles.pricingValue}>{getPricingZoneLabel(plot.pricing.pricingZone)}</Text>
+                </View>
+                {plot.pricing.recommendedMinUSD > 0 && (
+                  <View style={styles.pricingInfoRow}>
+                    <Text style={styles.pricingLabel}>Recommended Price Range:</Text>
+                    <Text style={styles.pricingValue}>
+                      {formatPrice(plot.pricing.recommendedMinUSD)} - {formatPrice(plot.pricing.recommendedMaxUSD)}
+                    </Text>
+                  </View>
+                )}
+                <View style={styles.pricingInfoRow}>
+                  <Text style={styles.pricingLabel}>Market Status:</Text>
+                  <View style={[
+                    styles.marketStatusBadge,
+                    { backgroundColor: plot.pricing.marketStatus === 'below_market' ? theme.colors.success : 
+                      plot.pricing.marketStatus === 'above_market' ? theme.colors.warning : theme.colors.info }
+                  ]}>
+                    <Text style={styles.marketStatusText}>{getMarketStatusLabel(plot.pricing.marketStatus)}</Text>
+                  </View>
+                </View>
+              </View>
+            </View>
+          )}
 
           {/* Description */}
           <View style={styles.section}>
@@ -382,5 +438,47 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     marginBottom: theme.spacing.sm,
+  },
+  cadastralMapButton: {
+    marginTop: theme.spacing.sm,
+    backgroundColor: theme.colors.primary,
+    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    alignItems: 'center',
+  },
+  cadastralMapButtonText: {
+    color: theme.colors.text,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '600',
+  },
+  pricingInfoContainer: {
+    backgroundColor: theme.colors.surface,
+    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+  },
+  pricingInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: theme.spacing.sm,
+  },
+  pricingLabel: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
+  },
+  pricingValue: {
+    color: theme.colors.text,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '500',
+  },
+  marketStatusBadge: {
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.borderRadius.sm,
+  },
+  marketStatusText: {
+    color: theme.colors.text,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '600',
   },
 });

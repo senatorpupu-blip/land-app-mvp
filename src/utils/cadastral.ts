@@ -1,40 +1,94 @@
-// Cadastral number validation utilities
+// Cadastral number validation utilities for Ukrainian land registry
+// Ukrainian cadastral number format: XXXXXXXXXX:XX:XXX:XXXX
+// - First 10 digits: KOATUU code (region/district/settlement)
+// - Next 2 digits: cadastral zone
+// - Next 3 digits: cadastral quarter
+// - Last 4 digits: parcel number
 
-// Format: XX:XX:XXXXXXX:XXX (example format, adjust based on actual requirements)
-const CADASTRAL_REGEX = /^\d{2}:\d{2}:\d{6,7}:\d{1,5}$/;
+export const CADASTRAL_NUMBER_REGEX = /^\d{10}:\d{2}:\d{3}:\d{4}$/;
+export const CADASTRAL_NUMBER_REGEX_LOOSE = /^\d{10}:\d{2}:\d{3}:\d{1,4}$/;
 
 export const validateCadastralFormat = (cadastralNumber: string): boolean => {
-  return CADASTRAL_REGEX.test(cadastralNumber);
+  return CADASTRAL_NUMBER_REGEX.test(cadastralNumber);
+};
+
+export const validateCadastralFormatLoose = (cadastralNumber: string): boolean => {
+  return CADASTRAL_NUMBER_REGEX_LOOSE.test(cadastralNumber);
 };
 
 export const formatCadastralNumber = (input: string): string => {
-  // Remove all non-digits
   const digits = input.replace(/\D/g, '');
   
-  // Format as XX:XX:XXXXXXX:XXX
-  let formatted = '';
-  if (digits.length > 0) {
-    formatted = digits.substring(0, 2);
+  if (digits.length <= 10) {
+    return digits;
+  } else if (digits.length <= 12) {
+    return `${digits.slice(0, 10)}:${digits.slice(10)}`;
+  } else if (digits.length <= 15) {
+    return `${digits.slice(0, 10)}:${digits.slice(10, 12)}:${digits.slice(12)}`;
+  } else {
+    return `${digits.slice(0, 10)}:${digits.slice(10, 12)}:${digits.slice(12, 15)}:${digits.slice(15, 19)}`;
   }
-  if (digits.length > 2) {
-    formatted += ':' + digits.substring(2, 4);
-  }
-  if (digits.length > 4) {
-    formatted += ':' + digits.substring(4, 11);
-  }
-  if (digits.length > 11) {
-    formatted += ':' + digits.substring(11, 16);
+};
+
+export const parseCadastralNumber = (cadastralNumber: string): {
+  koatuuCode: string;
+  oblastCode: string;
+  raionCode: string;
+  zoneCode: string;
+  quarterCode: string;
+  parcelCode: string;
+} | null => {
+  const match = cadastralNumber.match(/^(\d{10}):(\d{2}):(\d{3}):(\d{4})$/);
+  
+  if (!match) {
+    return null;
   }
   
-  return formatted;
+  const koatuuCode = match[1];
+  
+  return {
+    koatuuCode,
+    oblastCode: koatuuCode.slice(0, 2),
+    raionCode: koatuuCode.slice(2, 4),
+    zoneCode: match[2],
+    quarterCode: match[3],
+    parcelCode: match[4],
+  };
 };
+
+export const getPublicCadastralMapUrl = (cadastralNumber: string): string => {
+  return `https://map.land.gov.ua/?cc=${encodeURIComponent(cadastralNumber)}`;
+};
+
+export const getCadastralValidationStatus = (
+  cadastralNumber: string,
+  isVerified: boolean
+): 'pending' | 'valid' | 'invalid' => {
+  if (!validateCadastralFormat(cadastralNumber)) {
+    return 'invalid';
+  }
+  
+  if (isVerified) {
+    return 'valid';
+  }
+  
+  return 'pending';
+};
+
+export interface CadastralApiResponse {
+  isValid: boolean;
+  exists: boolean;
+  area?: number;
+  purpose?: string;
+  ownershipType?: string;
+  errorMessage?: string;
+}
 
 // Mock verification - in production, this would call a real cadastral registry API
 export const verifyCadastralNumber = async (cadastralNumber: string): Promise<{
   verified: boolean;
   message: string;
 }> => {
-  // Simulate API call delay
   await new Promise(resolve => setTimeout(resolve, 1000));
   
   if (!validateCadastralFormat(cadastralNumber)) {
@@ -45,8 +99,7 @@ export const verifyCadastralNumber = async (cadastralNumber: string): Promise<{
   }
   
   // Mock verification - in production, call actual registry API
-  // For MVP, we'll simulate a basic check
-  const isValid = Math.random() > 0.2; // 80% success rate for demo
+  const isValid = Math.random() > 0.2;
   
   return {
     verified: isValid,
@@ -54,4 +107,40 @@ export const verifyCadastralNumber = async (cadastralNumber: string): Promise<{
       ? 'Cadastral number verified successfully' 
       : 'Cadastral number not found in registry',
   };
+};
+
+// Architecture for future cadastral API validation
+export const validateCadastralWithApi = async (
+  cadastralNumber: string
+): Promise<CadastralApiResponse> => {
+  if (!validateCadastralFormat(cadastralNumber)) {
+    return {
+      isValid: false,
+      exists: false,
+      errorMessage: 'Invalid cadastral number format',
+    };
+  }
+  
+  // TODO: Implement actual API call to Ukrainian cadastral registry
+  // API endpoint: https://e.land.gov.ua/api/...
+  // This is a placeholder for future implementation
+  
+  return {
+    isValid: true,
+    exists: true,
+    errorMessage: undefined,
+  };
+};
+
+export const CADASTRAL_HELP_TEXT = {
+  en: 'Cadastral number format: XXXXXXXXXX:XX:XXX:XXXX (e.g., 3220810100:01:001:0001)',
+  uk: 'Формат кадастрового номера: XXXXXXXXXX:XX:XXX:XXXX (напр., 3220810100:01:001:0001)',
+};
+
+export const extractOblastFromCadastral = (cadastralNumber: string): string | null => {
+  const parsed = parseCadastralNumber(cadastralNumber);
+  if (!parsed) {
+    return null;
+  }
+  return parsed.oblastCode;
 };

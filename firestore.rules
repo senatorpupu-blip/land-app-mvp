@@ -134,5 +134,23 @@ service cloud.firestore {
       // Only admins can delete reports
       allow delete: if isAdmin();
     }
+    
+    // Oblast Centers collection (read-only reference data)
+    match /oblastCenters/{oblastId} {
+      // Anyone can read oblast centers (public reference data)
+      allow read: if true;
+      
+      // Only admins can create/update/delete oblast centers
+      allow create, update, delete: if isAdmin();
+    }
+    
+    // Pricing Rules collection
+    match /pricingRules/{ruleId} {
+      // Anyone can read pricing rules (needed for price calculations)
+      allow read: if true;
+      
+      // Only admins can create/update/delete pricing rules
+      allow create, update, delete: if isAdmin();
+    }
   }
 }

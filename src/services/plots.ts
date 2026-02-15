@@ -14,20 +14,73 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../config/firebase';
-import { LandPlot, PlotFilters } from '../types';
+import { LandPlot, PlotFilters, LandCategory, ComputedPricing } from '../types';
+import { calculateComputedPricing } from '../utils/pricingZones';
+import { getPricingRule } from './pricingRules';
+import { validateCadastralFormat, getCadastralValidationStatus, extractOblastFromCadastral } from '../utils/cadastral';
 
 const PLOTS_COLLECTION = 'plots';
 
 export const createPlot = async (
-  plotData: Omit<LandPlot, 'id' | 'createdAt' | 'updatedAt' | 'totalPrice' | 'status'>
+  plotData: Omit<LandPlot, 'id' | 'createdAt' | 'updatedAt' | 'totalPrice' | 'status' | 'pricing' | 'cadastralValidationStatus'>
 ): Promise<string> => {
   try {
     const totalPrice = plotData.area * plotData.pricePerSotka;
+    
+    // Validate cadastral number format
+    const cadastralValidationStatus = getCadastralValidationStatus(
+      plotData.cadastralNumber,
+      plotData.cadastralVerified
+    );
+    
+    // Calculate computed pricing if category and location are provided
+    let pricing: ComputedPricing | undefined;
+    if (plotData.category && plotData.location) {
+      // Try to get pricing rule for the oblast
+      const oblastFromCadastral = extractOblastFromCadastral(plotData.cadastralNumber);
+      const oblastId = plotData.oblast || oblastFromCadastral || 'default';
+      
+      const pricingRule = await getPricingRule(
+        oblastId,
+        plotData.category,
+        'urban_core' // Will be recalculated based on distance
+      ).catch(() => null);
+      
+      // Calculate computed pricing with zone detection
+      pricing = calculateComputedPricing(
+        plotData.location.latitude,
+        plotData.location.longitude,
+        plotData.area,
+        plotData.pricePerSotka,
+        pricingRule || undefined
+      );
+      
+      // If we got a different zone, try to get the correct pricing rule
+      if (pricingRule && pricing.pricingZone !== 'urban_core') {
+        const correctPricingRule = await getPricingRule(
+          oblastId,
+          plotData.category,
+          pricing.pricingZone
+        ).catch(() => null);
+        
+        if (correctPricingRule) {
+          pricing = calculateComputedPricing(
+            plotData.location.latitude,
+            plotData.location.longitude,
+            plotData.area,
+            plotData.pricePerSotka,
+            correctPricingRule
+          );
+        }
+      }
+    }
     
     const docRef = await addDoc(collection(db, PLOTS_COLLECTION), {
       ...plotData,
       totalPrice,
       status: 'pending',
+      cadastralValidationStatus,
+      ...(pricing && { pricing }),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });

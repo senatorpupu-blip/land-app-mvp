@@ -36,6 +36,7 @@ const MOCK_PLOTS: LandPlot[] = [
     ownerPhone: '+1234567890',
     isInvestmentPlot: true,
     isCreditAvailable: true,
+    status: 'approved',
     createdAt: new Date(),
     updatedAt: new Date(),
   },
@@ -56,6 +57,7 @@ const MOCK_PLOTS: LandPlot[] = [
     ownerPhone: '+1234567891',
     isInvestmentPlot: false,
     isCreditAvailable: true,
+    status: 'approved',
     createdAt: new Date(),
     updatedAt: new Date(),
   },
@@ -76,6 +78,7 @@ const MOCK_PLOTS: LandPlot[] = [
     ownerPhone: '+1234567892',
     isInvestmentPlot: true,
     isCreditAvailable: false,
+    status: 'approved',
     createdAt: new Date(),
     updatedAt: new Date(),
   },
@@ -96,12 +99,13 @@ const MOCK_PLOTS: LandPlot[] = [
     ownerPhone: '+1234567893',
     isInvestmentPlot: false,
     isCreditAvailable: false,
+    status: 'approved',
     createdAt: new Date(),
     updatedAt: new Date(),
   },
 ];
 
-const REGIONS = ['North Valley', 'East Hills', 'South River', 'West Mountains'];
+const REGIONS= ['North Valley', 'East Hills', 'South River', 'West Mountains'];
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const [plots, setPlots] = useState<LandPlot[]>(MOCK_PLOTS);

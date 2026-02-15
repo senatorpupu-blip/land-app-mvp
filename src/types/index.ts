@@ -1,3 +1,49 @@
+// Pricing Zone Types
+export type PricingZone = 'urban_core' | 'suburban_0_15' | 'suburban_15_30' | 'rural';
+
+// Land Category Types (5 categories for Ukrainian land)
+export type LandCategory = 
+  | 'agricultural'      // Сільськогосподарські землі
+  | 'residential'       // Землі житлової забудови
+  | 'commercial'        // Землі комерційного призначення
+  | 'industrial'        // Землі промисловості
+  | 'recreational';     // Землі рекреаційного призначення
+
+// Market Status based on price comparison
+export type MarketStatus = 'below_market' | 'at_market' | 'above_market';
+
+// Oblast Center for distance calculations
+export interface OblastCenter {
+  id: string;
+  name: string;
+  nameUk: string; // Ukrainian name
+  latitude: number;
+  longitude: number;
+  oblastCode: string; // e.g., "01" for Vinnytsia
+}
+
+// Pricing Rule for zone-based pricing
+export interface PricingRule {
+  id: string;
+  oblast: string;
+  category: LandCategory;
+  zone: PricingZone;
+  minUSDPerSotka: number;
+  avgUSDPerSotka: number;
+  maxUSDPerSotka: number;
+  updatedAt: Date;
+}
+
+// Computed pricing fields for LandPlot
+export interface ComputedPricing {
+  oblastId: string;
+  distanceToOblastCenter: number; // in km
+  pricingZone: PricingZone;
+  recommendedMinUSD: number;
+  recommendedMaxUSD: number;
+  marketStatus: MarketStatus;
+}
+
 // Land Plot Types
 export interface LandPlot {
   id: string;
@@ -6,8 +52,10 @@ export interface LandPlot {
   area: number; // in sotkas
   pricePerSotka: number;
   totalPrice: number;
-  zone: 'A' | 'B' | 'C';
+  zone: 'A' | 'B' | 'C'; // Legacy zone field
   region: string;
+  oblast?: string; // Ukrainian oblast
+  category?: LandCategory;
   location: {
     latitude: number;
     longitude: number;
@@ -15,12 +63,15 @@ export interface LandPlot {
   };
   cadastralNumber: string;
   cadastralVerified: boolean;
+  cadastralValidationStatus?: 'pending' | 'valid' | 'invalid';
   photos: string[];
   ownerId: string;
   ownerPhone: string;
   isInvestmentPlot: boolean;
   isCreditAvailable: boolean;
   status: 'pending' | 'approved' | 'hidden';
+  // Computed pricing fields
+  pricing?: ComputedPricing;
   createdAt: Date;
   updatedAt: Date;
 }
