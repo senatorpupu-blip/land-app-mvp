@@ -33,6 +33,7 @@ module.exports = {
     '^@/(.*)$': '<rootDir>/src/$1',
     '^react-native$': '<rootDir>/__mocks__/react-native.js',
     '^react-native-maps$': '<rootDir>/__mocks__/react-native-maps.js',
+    '^react-native-map-clustering$': '<rootDir>/__mocks__/react-native-map-clustering.js',
   },
   testPathIgnorePatterns: ['/node_modules/', '/functions/'],
   globals: {
