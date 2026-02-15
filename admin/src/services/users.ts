@@ -5,27 +5,82 @@ import {
   updateDoc, 
   query, 
   orderBy,
-  serverTimestamp 
+  where,
+  limit as firestoreLimit,
+  startAfter,
+  serverTimestamp,
 } from 'firebase/firestore';
+import type { QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import { db } from '../config/firebase';
-import type { User } from '../types';
+import type { User, PaginatedResult, PaginationOptions } from '../types';
 
 const USERS_COLLECTION = 'users';
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 100;
 
-export const getAllUsers = async (): Promise<User[]> => {
+const docToUser = (doc: QueryDocumentSnapshot<DocumentData>): User => {
+  const data = doc.data();
+  return {
+    id: doc.id,
+    ...data,
+    isBlocked: data.isBlocked || false,
+    createdAt: data.createdAt?.toDate() || new Date(),
+  } as User;
+};
+
+export const getUsersPaginated = async (
+  options?: PaginationOptions & { isBlocked?: boolean }
+): Promise<PaginatedResult<User>> => {
   try {
-    const q = query(collection(db, USERS_COLLECTION), orderBy('createdAt', 'desc'));
+    const pageSize = Math.min(options?.limit || DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+    
+    let constraints: any[] = [
+      orderBy('createdAt', 'desc'),
+      firestoreLimit(pageSize + 1),
+    ];
+    
+    // Add isBlocked filter if specified
+    if (options?.isBlocked !== undefined) {
+      constraints = [
+        where('isBlocked', '==', options.isBlocked),
+        orderBy('createdAt', 'desc'),
+        firestoreLimit(pageSize + 1),
+      ];
+    }
+    
+    // Add cursor for pagination
+    if (options?.cursor) {
+      constraints.push(startAfter(options.cursor));
+    }
+    
+    const q = query(collection(db, USERS_COLLECTION), ...constraints);
     const querySnapshot = await getDocs(q);
     
-    return querySnapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        ...data,
-        isBlocked: data.isBlocked || false,
-        createdAt: data.createdAt?.toDate() || new Date(),
-      } as User;
-    });
+    let users = querySnapshot.docs.map(docToUser);
+    
+    const hasMore = users.length > pageSize;
+    if (hasMore) {
+      users = users.slice(0, pageSize);
+    }
+    
+    const lastDoc = users.length > 0 ? querySnapshot.docs[users.length - 1] : null;
+    
+    return {
+      data: users,
+      lastDoc,
+      hasMore,
+    };
+  } catch (error) {
+    console.error('Error getting paginated users:', error);
+    throw error;
+  }
+};
+
+// Legacy function for backward compatibility
+export const getAllUsers = async (): Promise<User[]> => {
+  try {
+    const result = await getUsersPaginated({ limit: MAX_PAGE_SIZE });
+    return result.data;
   } catch (error) {
     console.error('Error getting users:', error);
     throw error;

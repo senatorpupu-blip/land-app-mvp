@@ -2,19 +2,47 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
+    // ============================================
+    // ROLE-BASED ACCESS CONTROL
+    // ============================================
+    
     // Helper function to check if user is authenticated
     function isAuthenticated() {
       return request.auth != null;
     }
     
-    // Helper function to check if user is admin
-    // Admin emails are hardcoded - update this list as needed
+    // Get user document for role checking
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    // Check if user exists in database
+    function userExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+    
+    // Helper function to check user role
+    function hasRole(role) {
+      return isAuthenticated() && userExists() && getUserData().role == role;
+    }
+    
+    // Helper function to check if user is admin (by role or email fallback)
     function isAdmin() {
-      return isAuthenticated() && 
+      return isAuthenticated() && (
+        (userExists() && getUserData().role == 'admin') ||
         request.auth.token.email in [
           'admin@landplots.com',
           'moderator@landplots.com'
-        ];
+        ]
+      );
+    }
+    
+    // Helper function to check if user is moderator or admin
+    function isModerator() {
+      return isAuthenticated() && (
+        isAdmin() ||
+        (userExists() && getUserData().role == 'moderator')
+      );
     }
     
     // Helper function to check if user is the owner
@@ -24,54 +52,81 @@ service cloud.firestore {
     
     // Helper function to check if user is blocked
     function isNotBlocked() {
-      return !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked != true;
+      return !userExists() || getUserData().isBlocked != true;
     }
     
-    // Plots collection
+    // ============================================
+    // RATE LIMITING HELPERS (for future use)
+    // ============================================
+    
+    // Validate geohash format for geo queries
+    function isValidGeohash(geohash) {
+      return geohash is string && geohash.size() >= 1 && geohash.size() <= 12;
+    }
+    
+    // ============================================
+    // PLOTS COLLECTION - Scalable queries
+    // ============================================
     match /plots/{plotId} {
-      // Anyone can read approved plots
-      // Owners can read their own plots regardless of status
-      // Admins can read all plots
-      allow read: if isAdmin() || 
+      // Read rules:
+      // - Anyone can read approved plots (for public listing)
+      // - Owners can read their own plots regardless of status
+      // - Admins/Moderators can read all plots
+      allow read: if isModerator() || 
         resource.data.status == 'approved' ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
       
-      // Authenticated non-blocked users can create plots (status will be 'pending')
+      // Create rules:
+      // - Authenticated non-blocked users can create plots
+      // - Status must be 'pending' (requires admin approval)
+      // - Must include valid geohash for geo queries
       allow create: if isAuthenticated() && 
         isNotBlocked() &&
         request.resource.data.ownerId == request.auth.uid &&
-        request.resource.data.status == 'pending';
+        request.resource.data.status == 'pending' &&
+        request.resource.data.location.geohash is string;
       
-      // Owners can update their own plots (except status field)
-      // Admins can update any plot including status
-      allow update: if isAdmin() ||
+      // Update rules:
+      // - Owners can update their own plots (except status and role-protected fields)
+      // - Admins/Moderators can update any plot including status
+      allow update: if isModerator() ||
         (isAuthenticated() && 
          isNotBlocked() &&
          resource.data.ownerId == request.auth.uid &&
          request.resource.data.status == resource.data.status);
       
-      // Only owners can delete their own plots, or admins
+      // Delete rules:
+      // - Only owners can delete their own plots
+      // - Admins can delete any plot
       allow delete: if isAdmin() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
     }
     
-    // Users collection
+    // ============================================
+    // USERS COLLECTION - Role-based access
+    // ============================================
     match /users/{userId} {
-      // Users can read their own profile
-      // Admins can read all profiles
+      // Read rules:
+      // - Users can read their own profile
+      // - Admins can read all profiles for moderation
       allow read: if isAdmin() || isOwner(userId);
       
-      // Users can create their own profile
-      allow create: if isOwner(userId);
+      // Create rules:
+      // - Users can create their own profile
+      // - Default role is 'user'
+      allow create: if isOwner(userId) &&
+        request.resource.data.role == 'user';
       
-      // Users can update their own profile (except isBlocked)
-      // Admins can update any profile including isBlocked
+      // Update rules:
+      // - Users can update their own profile (except isBlocked and role)
+      // - Admins can update any profile including isBlocked and role
       allow update: if isAdmin() ||
         (isOwner(userId) && 
-         request.resource.data.isBlocked == resource.data.isBlocked);
+         request.resource.data.isBlocked == resource.data.isBlocked &&
+         request.resource.data.role == resource.data.role);
       
-      // Only admins can delete users
+      // Delete rules:
+      // - Only admins can delete users
       allow delete: if isAdmin();
     }
     

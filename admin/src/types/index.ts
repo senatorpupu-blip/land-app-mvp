@@ -1,3 +1,5 @@
+export type PlotStatus = 'pending' | 'approved' | 'hidden';
+
 export interface LandPlot {
   id: string;
   title: string;
@@ -11,6 +13,7 @@ export interface LandPlot {
     latitude: number;
     longitude: number;
     address: string;
+    geohash?: string;
   };
   cadastralNumber: string;
   cadastralVerified: boolean;
@@ -19,7 +22,7 @@ export interface LandPlot {
   ownerPhone: string;
   isInvestmentPlot: boolean;
   isCreditAvailable: boolean;
-  status: 'pending' | 'approved' | 'hidden';
+  status: PlotStatus;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -39,4 +42,23 @@ export interface Report {
   reason: string;
   status: 'pending' | 'resolved';
   createdAt: Date;
+}
+
+// Pagination Types
+export interface PaginatedResult<T> {
+  data: T[];
+  lastDoc: unknown | null;
+  hasMore: boolean;
+}
+
+export interface PaginationOptions {
+  limit?: number;
+  cursor?: unknown;
+}
+
+// User Roles
+export type UserRole = 'user' | 'admin' | 'moderator';
+
+export interface UserWithRole extends User {
+  role: UserRole;
 }

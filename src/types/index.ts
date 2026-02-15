@@ -12,6 +12,7 @@ export interface LandPlot {
     latitude: number;
     longitude: number;
     address: string;
+    geohash?: string; // For geo queries (optional for backward compatibility)
   };
   cadastralNumber: string;
   cadastralVerified: boolean;
@@ -59,6 +60,40 @@ export interface PlotFilters {
   maxPrice?: number;
   zone?: 'A' | 'B' | 'C';
   region?: string;
+  // Geo filters
+  latitude?: number;
+  longitude?: number;
+  radiusKm?: number;
+}
+
+// Pagination Types
+export interface PaginatedResult<T> {
+  data: T[];
+  lastDoc: unknown | null;
+  hasMore: boolean;
+}
+
+export interface PaginationOptions {
+  limit?: number;
+  cursor?: unknown;
+}
+
+// Map Clustering Types
+export interface MapCluster {
+  id: string;
+  latitude: number;
+  longitude: number;
+  count: number;
+  plotIds: string[];
+  geohash: string;
+}
+
+// User Roles
+export type UserRole = 'user' | 'admin' | 'moderator';
+
+export interface UserWithRole extends User {
+  role: UserRole;
+  isBlocked: boolean;
 }
 
 // Auth Types
