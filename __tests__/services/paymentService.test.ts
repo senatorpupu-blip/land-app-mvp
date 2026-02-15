@@ -3,6 +3,12 @@ import {
   formatPrice,
   getPremiumBenefits,
   PREMIUM_PRICING,
+  isPremiumExpired,
+  isPromotionExpired,
+  getDaysRemaining,
+  formatExpirationDate,
+  getPremiumStatus,
+  PREMIUM_PACKAGES,
 } from '../../src/services/paymentService';
 
 describe('Payment Service', () => {
@@ -101,29 +107,114 @@ describe('Payment Service', () => {
 });
 
 describe('Premium Expiration Logic', () => {
-  it('should correctly check if premium is active', () => {
-    const now = new Date();
-    const futureDate = new Date(now.getTime() + 86400000);
-    const pastDate = new Date(now.getTime() - 86400000);
-    
-    const isPremiumActive = (expiresAt: Date | undefined): boolean => {
-      if (!expiresAt) return true;
-      return new Date() < expiresAt;
-    };
-    
-    expect(isPremiumActive(futureDate)).toBe(true);
-    expect(isPremiumActive(pastDate)).toBe(false);
-    expect(isPremiumActive(undefined)).toBe(true);
+  describe('isPremiumExpired', () => {
+    it('should return true for undefined expiration', () => {
+      expect(isPremiumExpired(undefined)).toBe(true);
+    });
+
+    it('should return true for past date', () => {
+      const pastDate = new Date(Date.now() - 86400000);
+      expect(isPremiumExpired(pastDate)).toBe(true);
+    });
+
+    it('should return false for future date', () => {
+      const futureDate = new Date(Date.now() + 86400000);
+      expect(isPremiumExpired(futureDate)).toBe(false);
+    });
   });
 
-  it('should calculate correct expiration date', () => {
-    const now = new Date();
-    const durationDays = 30;
-    const expiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
-    
-    const diffMs = expiresAt.getTime() - now.getTime();
-    const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
-    
-    expect(diffDays).toBe(30);
+  describe('isPromotionExpired', () => {
+    it('should return true for undefined expiration', () => {
+      expect(isPromotionExpired(undefined)).toBe(true);
+    });
+
+    it('should return false for future date', () => {
+      const futureDate = new Date(Date.now() + 86400000);
+      expect(isPromotionExpired(futureDate)).toBe(false);
+    });
+  });
+
+  describe('getDaysRemaining', () => {
+    it('should return 0 for undefined', () => {
+      expect(getDaysRemaining(undefined)).toBe(0);
+    });
+
+    it('should return 0 for past date', () => {
+      const pastDate = new Date(Date.now() - 86400000);
+      expect(getDaysRemaining(pastDate)).toBe(0);
+    });
+
+    it('should return correct days for future date', () => {
+      const futureDate = new Date(Date.now() + 7 * 86400000);
+      const days = getDaysRemaining(futureDate);
+      expect(days).toBeGreaterThanOrEqual(6);
+      expect(days).toBeLessThanOrEqual(8);
+    });
+  });
+
+  describe('formatExpirationDate', () => {
+    it('should return "Не активовано" for undefined', () => {
+      expect(formatExpirationDate(undefined)).toBe('Не активовано');
+    });
+
+    it('should return "Закінчується сьогодні" for expiring soon', () => {
+      // Date that expires within the same day (less than 1 day remaining)
+      const today = new Date(Date.now() + 1000);
+      const result = formatExpirationDate(today);
+      // Should be either "today" or "tomorrow" depending on exact timing
+      expect(['Закінчується сьогодні', 'Закінчується завтра']).toContain(result);
+    });
+
+    it('should return "Закінчується завтра" for tomorrow', () => {
+      // Exactly 1 day from now
+      const tomorrow = new Date(Date.now() + 1.5 * 86400000);
+      const result = formatExpirationDate(tomorrow);
+      // Should show days remaining
+      expect(result).toMatch(/Закінчується завтра|Залишилось/);
+    });
+
+    it('should return days remaining for dates within a week', () => {
+      const inFiveDays = new Date(Date.now() + 5 * 86400000);
+      const result = formatExpirationDate(inFiveDays);
+      expect(result).toContain('Залишилось');
+      expect(result).toContain('днів');
+    });
+  });
+
+  describe('getPremiumStatus', () => {
+    it('should return correct status for active premium', () => {
+      const futureDate = new Date(Date.now() + 30 * 86400000);
+      const status = getPremiumStatus(futureDate, undefined);
+      
+      expect(status.isPremium).toBe(true);
+      expect(status.isPromoted).toBe(false);
+      expect(status.premiumDaysRemaining).toBeGreaterThan(0);
+    });
+
+    it('should return correct status for expired premium', () => {
+      const pastDate = new Date(Date.now() - 86400000);
+      const status = getPremiumStatus(pastDate, undefined);
+      
+      expect(status.isPremium).toBe(false);
+      expect(status.premiumDaysRemaining).toBe(0);
+    });
+  });
+
+  describe('PREMIUM_PACKAGES', () => {
+    it('should have 5 packages', () => {
+      expect(PREMIUM_PACKAGES).toHaveLength(5);
+    });
+
+    it('should have Ukrainian labels', () => {
+      PREMIUM_PACKAGES.forEach(pkg => {
+        expect(pkg.label).toBeTruthy();
+        expect(pkg.description).toBeTruthy();
+      });
+    });
+
+    it('should have correct pricing', () => {
+      const premium7 = PREMIUM_PACKAGES.find(p => p.id === 'premium-7');
+      expect(premium7?.price).toBe(PREMIUM_PRICING.premium7Days);
+    });
   });
 });

@@ -122,3 +122,136 @@ export const getPremiumBenefits = (type: 'premium' | 'promotion'): string[] => {
     ];
   }
 };
+
+/**
+ * Check if premium status is expired
+ */
+export const isPremiumExpired = (expiresAt: Date | undefined): boolean => {
+  if (!expiresAt) return true;
+  return new Date() > expiresAt;
+};
+
+/**
+ * Check if promotion status is expired
+ */
+export const isPromotionExpired = (expiresAt: Date | undefined): boolean => {
+  if (!expiresAt) return true;
+  return new Date() > expiresAt;
+};
+
+/**
+ * Calculate days remaining until expiration
+ */
+export const getDaysRemaining = (expiresAt: Date | undefined): number => {
+  if (!expiresAt) return 0;
+  const now = new Date();
+  const diff = expiresAt.getTime() - now.getTime();
+  return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+};
+
+/**
+ * Format expiration date for display
+ */
+export const formatExpirationDate = (expiresAt: Date | undefined): string => {
+  if (!expiresAt) return 'Не активовано';
+  
+  const daysRemaining = getDaysRemaining(expiresAt);
+  
+  if (daysRemaining === 0) {
+    return 'Закінчується сьогодні';
+  } else if (daysRemaining === 1) {
+    return 'Закінчується завтра';
+  } else if (daysRemaining <= 7) {
+    return `Залишилось ${daysRemaining} днів`;
+  } else {
+    return expiresAt.toLocaleDateString('uk-UA', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+  }
+};
+
+/**
+ * Get premium status summary for a plot
+ */
+export interface PremiumStatus {
+  isPremium: boolean;
+  isPromoted: boolean;
+  premiumDaysRemaining: number;
+  promotionDaysRemaining: number;
+  premiumExpirationText: string;
+  promotionExpirationText: string;
+}
+
+export const getPremiumStatus = (
+  premiumExpiresAt: Date | undefined,
+  promotedExpiresAt: Date | undefined
+): PremiumStatus => {
+  const premiumExpired = isPremiumExpired(premiumExpiresAt);
+  const promotionExpired = isPromotionExpired(promotedExpiresAt);
+  
+  return {
+    isPremium: !premiumExpired,
+    isPromoted: !promotionExpired,
+    premiumDaysRemaining: getDaysRemaining(premiumExpiresAt),
+    promotionDaysRemaining: getDaysRemaining(promotedExpiresAt),
+    premiumExpirationText: formatExpirationDate(premiumExpiresAt),
+    promotionExpirationText: formatExpirationDate(promotedExpiresAt),
+  };
+};
+
+/**
+ * Available premium packages
+ */
+export interface PremiumPackage {
+  id: string;
+  type: 'premium' | 'promotion';
+  durationDays: number;
+  price: number;
+  label: string;
+  description: string;
+}
+
+export const PREMIUM_PACKAGES: PremiumPackage[] = [
+  {
+    id: 'premium-7',
+    type: 'premium',
+    durationDays: 7,
+    price: PREMIUM_PRICING.premium7Days,
+    label: 'Преміум 7 днів',
+    description: 'Виділіть своє оголошення на тиждень',
+  },
+  {
+    id: 'premium-30',
+    type: 'premium',
+    durationDays: 30,
+    price: PREMIUM_PRICING.premium30Days,
+    label: 'Преміум 30 днів',
+    description: 'Найпопулярніший вибір',
+  },
+  {
+    id: 'premium-90',
+    type: 'premium',
+    durationDays: 90,
+    price: PREMIUM_PRICING.premium90Days,
+    label: 'Преміум 90 днів',
+    description: 'Найвигідніша пропозиція',
+  },
+  {
+    id: 'promo-7',
+    type: 'promotion',
+    durationDays: 7,
+    price: PREMIUM_PRICING.promotion7Days,
+    label: 'Топ 7 днів',
+    description: 'Показ на початку списку',
+  },
+  {
+    id: 'promo-30',
+    type: 'promotion',
+    durationDays: 30,
+    price: PREMIUM_PRICING.promotion30Days,
+    label: 'Топ 30 днів',
+    description: 'Максимум переглядів',
+  },
+];
