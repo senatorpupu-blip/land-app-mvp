@@ -7,109 +7,21 @@ import {
   SafeAreaView,
   Dimensions,
   Platform,
-  Switch
+  Switch,
+  ActivityIndicator
 } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE, UrlTile } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE, UrlTile, Region } from 'react-native-maps';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { db } from '../config/firebase';
 import { theme } from '../config/theme';
 import { FilterModal } from '../components';
 import { LandPlot, PlotFilters } from '../types';
-import { getPricingZoneLabel } from '../utils/pricingZones';
 
 interface MapScreenProps {
   navigation: any;
 }
 
 const { width, height } = Dimensions.get('window');
-
-// Mock data - same as HomeScreen
-const MOCK_PLOTS: LandPlot[] = [
-  {
-    id: '1',
-    title: 'Sunny Meadow Plot',
-    description: 'Beautiful plot with mountain views',
-    area: 10,
-    pricePerSotka: 5000,
-    totalPrice: 50000,
-    zone: 'A',
-    region: 'North Valley',
-    location: { latitude: 40.7128, longitude: -74.006, address: '123 Main St' },
-    cadastralNumber: '12:34:567890:123',
-    cadastralVerified: true,
-    photos: ['https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=400'],
-    ownerId: '1',
-    ownerPhone: '+1234567890',
-    isInvestmentPlot: true,
-    isCreditAvailable: true,
-    status: 'approved',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  },
-  {
-    id: '2',
-    title: 'Forest Edge Land',
-    description: 'Peaceful plot near the forest',
-    area: 15,
-    pricePerSotka: 3500,
-    totalPrice: 52500,
-    zone: 'B',
-    region: 'East Hills',
-    location: { latitude: 40.7189, longitude: -74.001, address: '456 Oak Ave' },
-    cadastralNumber: '12:34:567890:456',
-    cadastralVerified: false,
-    photos: ['https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=400'],
-    ownerId: '2',
-    ownerPhone: '+1234567891',
-    isInvestmentPlot: false,
-    isCreditAvailable: true,
-    status: 'approved',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  },
-  {
-    id: '3',
-    title: 'Riverside Property',
-    description: 'Prime location by the river',
-    area: 8,
-    pricePerSotka: 7000,
-    totalPrice: 56000,
-    zone: 'A',
-    region: 'South River',
-    location: { latitude: 40.7084, longitude: -74.012, address: '789 River Rd' },
-    cadastralNumber: '12:34:567890:789',
-    cadastralVerified: true,
-    photos: ['https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400'],
-    ownerId: '3',
-    ownerPhone: '+1234567892',
-    isInvestmentPlot: true,
-    isCreditAvailable: false,
-    status: 'approved',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  },
-  {
-    id: '4',
-    title: 'Hilltop View',
-    description: 'Panoramic views from the hilltop',
-    area: 20,
-    pricePerSotka: 2500,
-    totalPrice: 50000,
-    zone: 'C',
-    region: 'West Mountains',
-    location: { latitude: 40.7214, longitude: -74.008, address: '321 Hill St' },
-    cadastralNumber: '12:34:567890:321',
-    cadastralVerified: false,
-    photos: ['https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=400'],
-    ownerId: '4',
-    ownerPhone: '+1234567893',
-    isInvestmentPlot: false,
-    isCreditAvailable: false,
-    status: 'approved',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  },
-];
-
-const REGIONS = ['North Valley', 'East Hills', 'South River', 'West Mountains'];
 
 // Ukraine center coordinates (Kyiv)
 const UKRAINE_CENTER = {
@@ -119,19 +31,66 @@ const UKRAINE_CENTER = {
   longitudeDelta: 8.0,
 };
 
-// Ukrainian cadastral map tile URL
-const CADASTRAL_TILE_URL = 'https://map.land.gov.ua/geowebcache/service/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&FORMAT=image/png&TRANSPARENT=true&LAYERS=kadastr&WIDTH=256&HEIGHT=256&SRS=EPSG:3857&BBOX={minX},{minY},{maxX},{maxY}';
-
 const INITIAL_REGION = UKRAINE_CENTER;
 
 export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
-  const [plots, setPlots] = useState<LandPlot[]>(MOCK_PLOTS);
-  const [filteredPlots, setFilteredPlots] = useState<LandPlot[]>(MOCK_PLOTS);
+  const [plots, setPlots] = useState<LandPlot[]>([]);
+  const [filteredPlots, setFilteredPlots] = useState<LandPlot[]>([]);
   const [filters, setFilters] = useState<PlotFilters>({});
   const [showFilters, setShowFilters] = useState(false);
   const [selectedPlot, setSelectedPlot] = useState<LandPlot | null>(null);
   const [showCadastralOverlay, setShowCadastralOverlay] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [regions, setRegions] = useState<string[]>([]);
   const mapRef = useRef<MapView>(null);
+
+  // Subscribe to Firestore plots collection in real-time
+  useEffect(() => {
+    const plotsRef = collection(db, 'plots');
+    const q = query(plotsRef, where('status', '==', 'approved'));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedPlots: LandPlot[] = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          createdAt: data.createdAt?.toDate() || new Date(),
+          updatedAt: data.updatedAt?.toDate() || new Date(),
+        } as LandPlot;
+      });
+      
+      setPlots(loadedPlots);
+      setFilteredPlots(loadedPlots);
+      
+      // Extract unique regions from loaded plots
+      const uniqueRegions = [...new Set(loadedPlots.map(p => p.region).filter(Boolean))];
+      setRegions(uniqueRegions);
+      
+      setIsLoading(false);
+      
+      // Auto-fit map to markers if there are plots
+      if (loadedPlots.length > 0 && mapRef.current) {
+        const coordinates = loadedPlots.map(p => ({
+          latitude: p.location.latitude,
+          longitude: p.location.longitude,
+        }));
+        
+        // Fit map to show all markers with padding
+        setTimeout(() => {
+          mapRef.current?.fitToCoordinates(coordinates, {
+            edgePadding: { top: 100, right: 50, bottom: 150, left: 50 },
+            animated: true,
+          });
+        }, 500);
+      }
+    }, (error) => {
+      console.error('Error loading plots:', error);
+      setIsLoading(false);
+    });
+    
+    return () => unsubscribe();
+  }, []);
 
   const applyFilters = (newFilters: PlotFilters) => {
     setFilters(newFilters);
@@ -297,8 +256,16 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
         onClose={() => setShowFilters(false)}
         onApply={applyFilters}
         currentFilters={filters}
-        regions={REGIONS}
+        regions={regions}
       />
+
+      {/* Loading overlay */}
+      {isLoading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text style={styles.loadingText}>Loading plots...</Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 };
@@ -443,5 +410,20 @@ const styles = StyleSheet.create({
     paddingTop: theme.spacing.sm,
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: theme.colors.text,
+    fontSize: theme.fontSize.md,
+    marginTop: theme.spacing.md,
   },
 });
