@@ -197,80 +197,80 @@ export const searchPlotsServerSide = async (request: SearchRequest): Promise<Sea
   }
 };
 
-export const getAvailableOblasts = async (): Promise<string[]> => {
+export interface FilterOptions {
+  oblasts: string[];
+  categories: LandCategory[];
+  priceRange: { min: number; max: number };
+  areaRange: { min: number; max: number };
+}
+
+let cachedFilterOptions: FilterOptions | null = null;
+let cacheTimestamp = 0;
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+export const getFilterOptions = async (): Promise<FilterOptions> => {
+  const now = Date.now();
+  if (cachedFilterOptions && (now - cacheTimestamp) < CACHE_TTL_MS) {
+    return cachedFilterOptions;
+  }
+  
   const q = query(
     collection(db, PLOTS_COLLECTION),
     where('status', '==', 'approved'),
-    orderBy('oblast')
+    limit(1000)
   );
   
   const snapshot = await getDocs(q);
+  
   const oblasts = new Set<string>();
+  const categories = new Set<LandCategory>();
+  let minPrice = Infinity;
+  let maxPrice = 0;
+  let minArea = Infinity;
+  let maxArea = 0;
   
   snapshot.docs.forEach(doc => {
-    const oblast = doc.data().oblast;
-    if (oblast) {
-      oblasts.add(oblast);
-    }
+    const data = doc.data();
+    if (data.oblast) oblasts.add(data.oblast);
+    if (data.category) categories.add(data.category as LandCategory);
+    if (data.totalPrice < minPrice) minPrice = data.totalPrice;
+    if (data.totalPrice > maxPrice) maxPrice = data.totalPrice;
+    if (data.area < minArea) minArea = data.area;
+    if (data.area > maxArea) maxArea = data.area;
   });
   
-  return Array.from(oblasts).sort();
+  cachedFilterOptions = {
+    oblasts: Array.from(oblasts).sort(),
+    categories: Array.from(categories),
+    priceRange: { min: minPrice === Infinity ? 0 : minPrice, max: maxPrice },
+    areaRange: { min: minArea === Infinity ? 0 : minArea, max: maxArea },
+  };
+  cacheTimestamp = now;
+  
+  return cachedFilterOptions;
+};
+
+export const invalidateFilterOptionsCache = (): void => {
+  cachedFilterOptions = null;
+  cacheTimestamp = 0;
+};
+
+export const getAvailableOblasts = async (): Promise<string[]> => {
+  const options = await getFilterOptions();
+  return options.oblasts;
 };
 
 export const getAvailableCategories = async (): Promise<LandCategory[]> => {
-  const q = query(
-    collection(db, PLOTS_COLLECTION),
-    where('status', '==', 'approved'),
-    orderBy('category')
-  );
-  
-  const snapshot = await getDocs(q);
-  const categories = new Set<LandCategory>();
-  
-  snapshot.docs.forEach(doc => {
-    const category = doc.data().category as LandCategory;
-    if (category) {
-      categories.add(category);
-    }
-  });
-  
-  return Array.from(categories);
+  const options = await getFilterOptions();
+  return options.categories;
 };
 
 export const getPriceRange = async (): Promise<{ min: number; max: number }> => {
-  const q = query(
-    collection(db, PLOTS_COLLECTION),
-    where('status', '==', 'approved')
-  );
-  
-  const snapshot = await getDocs(q);
-  let min = Infinity;
-  let max = 0;
-  
-  snapshot.docs.forEach(doc => {
-    const price = doc.data().totalPrice;
-    if (price < min) min = price;
-    if (price > max) max = price;
-  });
-  
-  return { min: min === Infinity ? 0 : min, max };
+  const options = await getFilterOptions();
+  return options.priceRange;
 };
 
 export const getAreaRange = async (): Promise<{ min: number; max: number }> => {
-  const q = query(
-    collection(db, PLOTS_COLLECTION),
-    where('status', '==', 'approved')
-  );
-  
-  const snapshot = await getDocs(q);
-  let min = Infinity;
-  let max = 0;
-  
-  snapshot.docs.forEach(doc => {
-    const area = doc.data().area;
-    if (area < min) min = area;
-    if (area > max) max = area;
-  });
-  
-  return { min: min === Infinity ? 0 : min, max };
+  const options = await getFilterOptions();
+  return options.areaRange;
 };
