@@ -6,12 +6,14 @@ import {
   FlatList, 
   TouchableOpacity,
   RefreshControl,
-  SafeAreaView
+  SafeAreaView,
+  ActivityIndicator
 } from 'react-native';
 import { theme } from '../config/theme';
 import { PlotCard, FilterModal } from '../components';
 import { LandPlot, PlotFilters } from '../types';
 import { getPlots } from '../services/plots';
+import { uk } from '../localization/uk';
 
 interface HomeScreenProps {
   navigation: any;
@@ -113,6 +115,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const [filters, setFilters] = useState<PlotFilters>({});
   const [showFilters, setShowFilters] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const applyFilters = useCallback((newFilters: PlotFilters) => {
     setFilters(newFilters);
@@ -154,43 +158,57 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Land Plots</Text>
+        <Text style={styles.title}>{uk.plots.title}</Text>
         <TouchableOpacity 
           style={styles.filterButton}
           onPress={() => setShowFilters(true)}
         >
           <Text style={styles.filterButtonText}>
-            Filters {activeFiltersCount > 0 ? `(${activeFiltersCount})` : ''}
+            {uk.filters.title} {activeFiltersCount > 0 ? `(${activeFiltersCount})` : ''}
           </Text>
         </TouchableOpacity>
       </View>
 
-      <FlatList
-        data={filteredPlots}
-        keyExtractor={(item) => item.id}
-        numColumns={2}
-        columnWrapperStyle={styles.row}
-        contentContainerStyle={styles.list}
-        renderItem={({ item }) => (
-          <PlotCard 
-            plot={item} 
-            onPress={() => handlePlotPress(item)} 
-          />
-        )}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={theme.colors.primary}
-          />
-        }
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No plots found</Text>
-            <Text style={styles.emptySubtext}>Try adjusting your filters</Text>
-          </View>
-        }
-      />
+      {loading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text style={styles.loadingText}>{uk.common.loading}</Text>
+        </View>
+      ) : error ? (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{error}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={onRefresh}>
+            <Text style={styles.retryButtonText}>{uk.common.retry}</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <FlatList
+          data={filteredPlots}
+          keyExtractor={(item) => item.id}
+          numColumns={2}
+          columnWrapperStyle={styles.row}
+          contentContainerStyle={styles.list}
+          renderItem={({ item }) => (
+            <PlotCard 
+              plot={item} 
+              onPress={() => handlePlotPress(item)} 
+            />
+          )}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={theme.colors.primary}
+            />
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>{uk.empty.plots}</Text>
+              <Text style={styles.emptySubtext}>{uk.empty.search}</Text>
+            </View>
+          }
+        />
+      )}
 
       <FilterModal
         visible={showFilters}
@@ -239,6 +257,39 @@ const styles = StyleSheet.create({
   },
   row: {
     justifyContent: 'space-between',
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.md,
+    marginTop: theme.spacing.md,
+  },
+  errorContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: theme.spacing.xl,
+  },
+  errorText: {
+    color: theme.colors.error,
+    fontSize: theme.fontSize.md,
+    textAlign: 'center',
+    marginBottom: theme.spacing.md,
+  },
+  retryButton: {
+    backgroundColor: theme.colors.primary,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.borderRadius.md,
+  },
+  retryButtonText: {
+    color: theme.colors.text,
+    fontSize: theme.fontSize.md,
+    fontWeight: '600',
   },
   emptyContainer: {
     flex: 1,
