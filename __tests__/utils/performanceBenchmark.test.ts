@@ -71,7 +71,8 @@ describe('performanceBenchmark', () => {
       });
       
       expect(result).toBe('done');
-      expect(durationMs).toBeGreaterThanOrEqual(10);
+      // Allow slight timing variance (setTimeout is not perfectly precise)
+      expect(durationMs).toBeGreaterThanOrEqual(8);
     });
   });
 
