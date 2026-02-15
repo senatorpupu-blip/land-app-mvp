@@ -21,6 +21,7 @@ import {
   getPlotCoordinates,
 } from '../utils/mapUtils';
 import { formatPriceUAH, formatPricePerHectareUAH, calculatePricePerHectare } from '../utils/currency';
+import { uk } from '../localization/uk';
 
 interface MapScreenProps {
   navigation: any;
@@ -160,13 +161,13 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Map View</Text>
+        <Text style={styles.title}>{uk.map.title}</Text>
         <TouchableOpacity 
           style={styles.filterButton}
           onPress={() => setShowFilters(true)}
         >
           <Text style={styles.filterButtonText}>
-            Filters {activeFiltersCount > 0 ? `(${activeFiltersCount})` : ''}
+            {uk.filters.title} {activeFiltersCount > 0 ? `(${activeFiltersCount})` : ''}
           </Text>
         </TouchableOpacity>
       </View>
@@ -174,7 +175,7 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
       {isOffline && (
         <View style={styles.offlineBanner}>
           <Text style={styles.offlineBannerText}>
-            You are offline. Showing cached data.
+            {uk.errors.offline}
           </Text>
         </View>
       )}
@@ -183,7 +184,7 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
         <View style={styles.errorBanner}>
           <Text style={styles.errorBannerText}>{error}</Text>
           <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
-            <Text style={styles.retryButtonText}>Retry</Text>
+            <Text style={styles.retryButtonText}>{uk.common.retry}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -234,7 +235,7 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
                   styles.zoneBadge, 
                   { backgroundColor: getMarkerColor(selectedPlot.zone) }
                 ]}>
-                  <Text style={styles.zoneText}>Zone {selectedPlot.zone}</Text>
+                  <Text style={styles.zoneText}>{uk.plots.fields.zone} {selectedPlot.zone}</Text>
                 </View>
               </View>
               <Text style={styles.cardRegion}>{selectedPlot.region}</Text>
@@ -245,7 +246,7 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
               <Text style={styles.cardPricePerHectare}>
                 {getPricePerHectare(selectedPlot)}
               </Text>
-              <Text style={styles.tapHint}>Tap to view details</Text>
+              <Text style={styles.tapHint}>{uk.plots.plotDetails}</Text>
             </View>
             <TouchableOpacity 
               style={styles.closeButton}
@@ -259,18 +260,18 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
         <View style={styles.legend}>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: theme.colors.zoneA }]} />
-            <Text style={styles.legendText}>Zone A</Text>
+            <Text style={styles.legendText}>{uk.plots.fields.zone} A</Text>
           </View>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: theme.colors.zoneB }]} />
-            <Text style={styles.legendText}>Zone B</Text>
+            <Text style={styles.legendText}>{uk.plots.fields.zone} B</Text>
           </View>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: theme.colors.zoneC }]} />
-            <Text style={styles.legendText}>Zone C</Text>
+            <Text style={styles.legendText}>{uk.plots.fields.zone} C</Text>
           </View>
           <View style={styles.cadastralToggle}>
-            <Text style={styles.legendText}>Cadastral</Text>
+            <Text style={styles.legendText}>{uk.map.showCadastral}</Text>
             <Switch
               value={showCadastralOverlay}
               onValueChange={setShowCadastralOverlay}
@@ -282,13 +283,13 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
 
         {hasMore && !isLoading && filteredPlots.length > 0 && (
           <TouchableOpacity style={styles.loadMoreButton} onPress={handleLoadMore}>
-            <Text style={styles.loadMoreText}>Load more plots</Text>
+            <Text style={styles.loadMoreText}>{uk.common.loading}</Text>
           </TouchableOpacity>
         )}
 
         <View style={styles.plotCount}>
           <Text style={styles.plotCountText}>
-            {filteredPlots.length} plots
+            {filteredPlots.length} {uk.plots.units.sotkas === 'соток' ? 'ділянок' : 'plots'}
           </Text>
         </View>
       </View>
@@ -304,7 +305,7 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
       {isLoading && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text style={styles.loadingText}>Loading plots...</Text>
+          <Text style={styles.loadingText}>{uk.common.loading}</Text>
         </View>
       )}
     </SafeAreaView>
