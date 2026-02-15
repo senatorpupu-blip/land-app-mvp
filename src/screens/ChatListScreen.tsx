@@ -6,10 +6,12 @@ import {
   FlatList, 
   TouchableOpacity,
   SafeAreaView,
-  RefreshControl
+  RefreshControl,
+  ActivityIndicator
 } from 'react-native';
 import { theme } from '../config/theme';
 import { Chat } from '../types';
+import { uk } from '../localization/uk';
 
 interface ChatListScreenProps {
   navigation: any;
@@ -62,11 +64,11 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, user
     const days = Math.floor(diff / (1000 * 60 * 60 * 24));
 
     if (minutes < 60) {
-      return `${minutes}m ago`;
+      return `${minutes} хв`;
     } else if (hours < 24) {
-      return `${hours}h ago`;
+      return `${hours} год`;
     } else {
-      return `${days}d ago`;
+      return `${days} ${uk.dates.daysAgo}`;
     }
   };
 
@@ -104,7 +106,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, user
           {item.plotTitle}
         </Text>
         <Text style={styles.lastMessage} numberOfLines={1}>
-          {item.lastMessage || 'No messages yet'}
+          {item.lastMessage || uk.chat.noChats}
         </Text>
       </View>
     </TouchableOpacity>
@@ -113,7 +115,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, user
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Messages</Text>
+        <Text style={styles.title}>{uk.chat.title}</Text>
       </View>
 
       <FlatList
@@ -130,9 +132,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, user
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No conversations yet</Text>
+            <Text style={styles.emptyText}>{uk.chat.noChats}</Text>
             <Text style={styles.emptySubtext}>
-              Start a conversation by contacting a plot owner
+              {uk.plots.actions.contactOwner}
             </Text>
           </View>
         }
