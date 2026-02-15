@@ -1,7 +1,7 @@
-export const sanitizeText = (text: string): string => {
+export const sanitizeText = (text: string, maxLength?: number): string => {
   if (!text || typeof text !== 'string') return '';
   
-  return text
+  let sanitized = text
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
@@ -9,6 +9,12 @@ export const sanitizeText = (text: string): string => {
     .replace(/\//g, '&#x2F;')
     .replace(/`/g, '&#96;')
     .trim();
+  
+  if (maxLength && sanitized.length > maxLength) {
+    sanitized = sanitized.substring(0, maxLength);
+  }
+  
+  return sanitized;
 };
 
 export const validateTextLength = (

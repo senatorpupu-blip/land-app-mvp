@@ -9,3 +9,6 @@ export { AddPlotScreen } from './AddPlotScreen';
 export { MyListingsScreen } from './MyListingsScreen';
 export { EditPlotScreen } from './EditPlotScreen';
 export { AdminScreen } from './AdminScreen';
+export { NewsListScreen } from './NewsListScreen';
+export { NewsDetailScreen } from './NewsDetailScreen';
+export { ContentManagementScreen } from './ContentManagementScreen';

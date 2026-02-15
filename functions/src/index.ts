@@ -962,3 +962,388 @@ export const expirePremiumListings = functions.pubsub
 
     return null;
   });
+
+// ==========================================
+// NEWS & CONTENT CLOUD FUNCTIONS
+// ==========================================
+
+const NEWS_COLLECTION = 'news';
+
+type NewsCategory = 'market-analysis' | 'legislation' | 'platform-news' | 'investment' | 'other';
+type NewsStatus = 'draft' | 'published' | 'archived';
+type NewsAuthorRole = 'admin' | 'manager';
+
+interface CreateNewsRequest {
+  title: string;
+  shortDescription: string;
+  content: string;
+  category: NewsCategory;
+  tags: string[];
+  coverImageUrl?: string;
+  galleryImages?: string[];
+  isFeatured?: boolean;
+  status?: NewsStatus;
+}
+
+interface CreateNewsResponse {
+  success: boolean;
+  articleId?: string;
+  slug?: string;
+  error?: string;
+}
+
+const generateSlug = (title: string): string => {
+  const translitMap: Record<string, string> = {
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'h', 'ґ': 'g', 'д': 'd', 'е': 'e', 'є': 'ye',
+    'ж': 'zh', 'з': 'z', 'и': 'y', 'і': 'i', 'ї': 'yi', 'й': 'y', 'к': 'k', 'л': 'l',
+    'м': 'm', 'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+    'ф': 'f', 'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch', 'ь': '', 'ю': 'yu',
+    'я': 'ya', "'": '', 'ъ': '', 'ы': 'y', 'э': 'e',
+  };
+  
+  return title
+    .toLowerCase()
+    .split('')
+    .map(char => translitMap[char] || char)
+    .join('')
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .substring(0, 100);
+};
+
+const calculateReadingTime = (content: string): number => {
+  const wordsPerMinute = 200;
+  const wordCount = content.trim().split(/\s+/).length;
+  return Math.max(1, Math.ceil(wordCount / wordsPerMinute));
+};
+
+const isValidNewsCategory = (category: string): category is NewsCategory => {
+  return ['market-analysis', 'legislation', 'platform-news', 'investment', 'other'].includes(category);
+};
+
+export const createNewsArticle = functions.https.onCall(
+  async (data: CreateNewsRequest, context): Promise<CreateNewsResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач має бути авторизований.'
+      );
+    }
+
+    const userId = context.auth.uid;
+    
+    const userDoc = await db.collection(USERS_COLLECTION).doc(userId).get();
+    if (!userDoc.exists) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Користувача не знайдено.'
+      );
+    }
+    
+    const userData = userDoc.data();
+    const userRole = userData?.role;
+    
+    if (userRole !== 'admin' && userRole !== 'manager') {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Тільки адміністратори та менеджери можуть створювати новини.'
+      );
+    }
+
+    if (!data.title || typeof data.title !== 'string' || data.title.trim().length === 0) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Заголовок є обов\'язковим.'
+      );
+    }
+    
+    if (data.title.length > 200) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Заголовок занадто довгий (макс. 200 символів).'
+      );
+    }
+
+    if (!data.shortDescription || data.shortDescription.length > 500) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Короткий опис є обов\'язковим (макс. 500 символів).'
+      );
+    }
+
+    if (!data.content || data.content.length > 50000) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Зміст є обов\'язковим (макс. 50000 символів).'
+      );
+    }
+
+    if (!data.category || !isValidNewsCategory(data.category)) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Невірна категорія.'
+      );
+    }
+
+    const sanitizedTitle = sanitizeText(data.title, 200);
+    const sanitizedDescription = sanitizeText(data.shortDescription, 500);
+    const sanitizedContent = sanitizeText(data.content, 50000);
+
+    const baseSlug = generateSlug(sanitizedTitle);
+    const timestamp = Date.now();
+    const slug = `${baseSlug}-${timestamp}`;
+
+    const existingSlug = await db.collection(NEWS_COLLECTION)
+      .where('slug', '==', slug)
+      .limit(1)
+      .get();
+    
+    if (!existingSlug.empty) {
+      throw new functions.https.HttpsError(
+        'already-exists',
+        'Стаття з таким slug вже існує.'
+      );
+    }
+
+    const readingTime = calculateReadingTime(sanitizedContent);
+    const authorRole: NewsAuthorRole = userRole === 'admin' ? 'admin' : 'manager';
+
+    const articleData = {
+      title: sanitizedTitle,
+      slug,
+      shortDescription: sanitizedDescription,
+      content: sanitizedContent,
+      category: data.category,
+      tags: (data.tags || []).slice(0, 10).map(t => sanitizeText(t, 50)),
+      coverImageUrl: data.coverImageUrl || null,
+      galleryImages: (data.galleryImages || []).slice(0, 10),
+      isFeatured: data.isFeatured || false,
+      status: data.status || 'draft',
+      authorId: userId,
+      authorName: userData?.displayName || userData?.email || 'Адміністратор',
+      authorRole,
+      readingTime,
+      viewsCount: 0,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      publishedAt: data.status === 'published' ? admin.firestore.FieldValue.serverTimestamp() : null,
+    };
+
+    try {
+      const docRef = await db.collection(NEWS_COLLECTION).add(articleData);
+      
+      functions.logger.info('News article created', {
+        articleId: docRef.id,
+        slug,
+        userId,
+        category: data.category,
+      });
+
+      return {
+        success: true,
+        articleId: docRef.id,
+        slug,
+      };
+    } catch (error) {
+      functions.logger.error('Error creating news article', { error, userId });
+      throw new functions.https.HttpsError(
+        'internal',
+        'Не вдалося створити статтю.'
+      );
+    }
+  }
+);
+
+interface IncrementViewsRequest {
+  articleId: string;
+}
+
+interface IncrementViewsResponse {
+  success: boolean;
+  viewsCount?: number;
+}
+
+export const incrementNewsViews = functions.https.onCall(
+  async (data: IncrementViewsRequest): Promise<IncrementViewsResponse> => {
+    if (!data.articleId || typeof data.articleId !== 'string') {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'ID статті є обов\'язковим.'
+      );
+    }
+
+    const articleRef = db.collection(NEWS_COLLECTION).doc(data.articleId);
+    const articleDoc = await articleRef.get();
+    
+    if (!articleDoc.exists) {
+      throw new functions.https.HttpsError(
+        'not-found',
+        'Статтю не знайдено.'
+      );
+    }
+
+    const articleData = articleDoc.data();
+    if (articleData?.status !== 'published') {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Можна переглядати тільки опубліковані статті.'
+      );
+    }
+
+    await articleRef.update({
+      viewsCount: admin.firestore.FieldValue.increment(1),
+    });
+
+    const updatedDoc = await articleRef.get();
+    const newViewsCount = updatedDoc.data()?.viewsCount || 0;
+
+    return {
+      success: true,
+      viewsCount: newViewsCount,
+    };
+  }
+);
+
+interface UpdateNewsRequest {
+  articleId: string;
+  title?: string;
+  shortDescription?: string;
+  content?: string;
+  category?: NewsCategory;
+  tags?: string[];
+  coverImageUrl?: string;
+  galleryImages?: string[];
+  isFeatured?: boolean;
+  status?: NewsStatus;
+}
+
+interface UpdateNewsResponse {
+  success: boolean;
+  error?: string;
+}
+
+export const updateNewsArticle = functions.https.onCall(
+  async (data: UpdateNewsRequest, context): Promise<UpdateNewsResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач має бути авторизований.'
+      );
+    }
+
+    const userId = context.auth.uid;
+    
+    const userDoc = await db.collection(USERS_COLLECTION).doc(userId).get();
+    const userRole = userDoc.data()?.role;
+    
+    if (userRole !== 'admin' && userRole !== 'manager') {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Тільки адміністратори та менеджери можуть редагувати новини.'
+      );
+    }
+
+    if (!data.articleId) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'ID статті є обов\'язковим.'
+      );
+    }
+
+    const articleRef = db.collection(NEWS_COLLECTION).doc(data.articleId);
+    const articleDoc = await articleRef.get();
+    
+    if (!articleDoc.exists) {
+      throw new functions.https.HttpsError(
+        'not-found',
+        'Статтю не знайдено.'
+      );
+    }
+
+    const existingData = articleDoc.data();
+    const updates: Record<string, unknown> = {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (data.title !== undefined) {
+      if (data.title.length > 200) {
+        throw new functions.https.HttpsError(
+          'invalid-argument',
+          'Заголовок занадто довгий.'
+        );
+      }
+      updates.title = sanitizeText(data.title, 200);
+      
+      if (data.title !== existingData?.title) {
+        const baseSlug = generateSlug(data.title);
+        const timestamp = Date.now();
+        updates.slug = `${baseSlug}-${timestamp}`;
+      }
+    }
+
+    if (data.shortDescription !== undefined) {
+      updates.shortDescription = sanitizeText(data.shortDescription, 500);
+    }
+
+    if (data.content !== undefined) {
+      updates.content = sanitizeText(data.content, 50000);
+      updates.readingTime = calculateReadingTime(data.content);
+    }
+
+    if (data.category !== undefined && isValidNewsCategory(data.category)) {
+      updates.category = data.category;
+    }
+
+    if (data.tags !== undefined) {
+      updates.tags = data.tags.slice(0, 10).map(t => sanitizeText(t, 50));
+    }
+
+    if (data.coverImageUrl !== undefined) {
+      updates.coverImageUrl = data.coverImageUrl;
+    }
+
+    if (data.galleryImages !== undefined) {
+      updates.galleryImages = data.galleryImages.slice(0, 10);
+    }
+
+    if (data.isFeatured !== undefined) {
+      updates.isFeatured = data.isFeatured;
+    }
+
+    if (data.status !== undefined) {
+      updates.status = data.status;
+      if (data.status === 'published' && existingData?.status !== 'published') {
+        updates.publishedAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+    }
+
+    await articleRef.update(updates);
+
+    functions.logger.info('News article updated', {
+      articleId: data.articleId,
+      userId,
+    });
+
+    return { success: true };
+  }
+);
+
+export const checkSlugUniqueness = functions.https.onCall(
+  async (data: { slug: string }): Promise<{ isUnique: boolean }> => {
+    if (!data.slug || typeof data.slug !== 'string') {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Slug є обов\'язковим.'
+      );
+    }
+
+    const existing = await db.collection(NEWS_COLLECTION)
+      .where('slug', '==', data.slug)
+      .limit(1)
+      .get();
+
+    return { isUnique: existing.empty };
+  }
+);

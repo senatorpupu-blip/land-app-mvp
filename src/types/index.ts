@@ -232,3 +232,59 @@ export interface PaymentIntent {
   createdAt: Date;
   completedAt?: Date;
 }
+
+// News & Content Types
+export type NewsStatus = 'draft' | 'published' | 'archived';
+export type NewsAuthorRole = 'admin' | 'manager';
+export type NewsCategory = 
+  | 'market-analysis'    // Аналіз ринку
+  | 'legislation'        // Законодавство
+  | 'platform-news'      // Новини платформи
+  | 'investment'         // Інвестиції
+  | 'other';             // Інше
+
+export interface NewsMetaData {
+  description?: string;
+  keywords?: string[];
+  ogTitle?: string;
+  ogDescription?: string;
+  ogImage?: string;
+}
+
+export interface NewsArticle {
+  id: string;
+  title: string;
+  slug: string;
+  shortDescription: string;
+  content: string;
+  coverImageUrl?: string;
+  galleryImages: string[];
+  category: NewsCategory;
+  tags: string[];
+  authorId: string;
+  authorName: string;
+  authorRole: NewsAuthorRole;
+  readingTime: number;
+  viewsCount: number;
+  status: NewsStatus;
+  isFeatured: boolean;
+  metaData?: NewsMetaData;
+  createdAt: Date;
+  updatedAt: Date;
+  publishedAt?: Date;
+}
+
+export interface NewsListResponse {
+  articles: NewsArticle[];
+  hasMore: boolean;
+  nextCursor?: string;
+  totalCount: number;
+}
+
+export interface TrendingScore {
+  articleId: string;
+  score: number;
+  viewsLast24h: number;
+  viewsLast7d: number;
+  recencyBoost: number;
+}

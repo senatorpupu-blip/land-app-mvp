@@ -158,5 +158,44 @@ service cloud.firestore {
       // Only admins can create/update/delete pricing rules
       allow create, update, delete: if isAdmin();
     }
+    
+    // Land Analytics collection (read-only analytics data)
+    match /landAnalytics/{analyticsId} {
+      // Anyone can read analytics (public reference data)
+      allow read: if true;
+      
+      // Only Cloud Functions can write (no direct client writes)
+      allow create, update, delete: if false;
+    }
+    
+    // News collection
+    match /news/{articleId} {
+      // Helper function to check if user is admin or manager
+      function isAdminOrManager() {
+        return isAuthenticated() && 
+          (getUserData().role == 'admin' || getUserData().role == 'manager');
+      }
+      
+      // Public can read only published articles
+      // Admin/Manager can read all articles (any status)
+      allow read: if resource.data.status == 'published' || isAdminOrManager();
+      
+      // Only admin/manager can create articles
+      // NOTE: Prefer using createNewsArticle Cloud Function for validation
+      allow create: if isAdminOrManager() &&
+        request.resource.data.title.size() <= 200 &&
+        request.resource.data.shortDescription.size() <= 500 &&
+        request.resource.data.content.size() <= 50000 &&
+        request.resource.data.authorId == request.auth.uid;
+      
+      // Only admin/manager can update articles
+      allow update: if isAdminOrManager() &&
+        request.resource.data.title.size() <= 200 &&
+        request.resource.data.shortDescription.size() <= 500 &&
+        request.resource.data.content.size() <= 50000;
+      
+      // Only admin/manager can delete (soft delete via status='archived')
+      allow delete: if isAdminOrManager();
+    }
   }
 }

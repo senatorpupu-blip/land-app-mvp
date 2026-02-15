@@ -17,6 +17,9 @@ import {
   MyListingsScreen,
   EditPlotScreen,
   AdminScreen,
+  NewsListScreen,
+  NewsDetailScreen,
+  ContentManagementScreen,
 } from '../screens';
 
 const navigationTheme = {
@@ -42,6 +45,8 @@ const TabIcon: React.FC<{ name: string; focused: boolean }> = ({ name, focused }
         return '🗺️';
       case 'Мої':
         return '📋';
+      case 'Новини':
+        return '📰';
       case 'Повідомлення':
         return '💬';
       case 'Профіль':
@@ -163,6 +168,32 @@ const ChatStack: React.FC<ChatStackProps> = ({ userId }) => (
   </Stack.Navigator>
 );
 
+const NewsStack: React.FC = () => (
+  <Stack.Navigator
+    screenOptions={{
+      headerStyle: { backgroundColor: theme.colors.surface },
+      headerTintColor: theme.colors.text,
+      headerTitleStyle: { fontWeight: '600' },
+    }}
+  >
+    <Stack.Screen 
+      name="NewsList" 
+      component={NewsListScreen}
+      options={{ headerShown: false }}
+    />
+    <Stack.Screen 
+      name="NewsDetail" 
+      component={NewsDetailScreen}
+      options={{ headerShown: false }}
+    />
+    <Stack.Screen 
+      name="ContentManagement" 
+      component={ContentManagementScreen}
+      options={{ headerShown: false }}
+    />
+  </Stack.Navigator>
+);
+
 const MainTabs: React.FC = () => {
   const { user, signOut, isSeller, isAdmin } = useAuth();
   
@@ -181,18 +212,19 @@ const MainTabs: React.FC = () => {
         headerShown: false,
       })}
     >
-      <Tab.Screen name="Головна" component={HomeStack} />
-      <Tab.Screen name="Карта" component={MapStack} />
-      {(isSeller || isAdmin) && (
-        <Tab.Screen name="Мої" component={SellerStack} />
-      )}
-      <Tab.Screen name="Повідомлення">
-        {() => <ChatStack userId={user.id} />}
-      </Tab.Screen>
-      <Tab.Screen name="Профіль">
-        {() => <ProfileScreen user={user} onSignOut={signOut} isAdmin={isAdmin} />}
-      </Tab.Screen>
-    </Tab.Navigator>
+          <Tab.Screen name="Головна" component={HomeStack} />
+          <Tab.Screen name="Карта" component={MapStack} />
+          <Tab.Screen name="Новини" component={NewsStack} />
+          {(isSeller || isAdmin) && (
+            <Tab.Screen name="Мої" component={SellerStack} />
+          )}
+          <Tab.Screen name="Повідомлення">
+            {() => <ChatStack userId={user.id} />}
+          </Tab.Screen>
+          <Tab.Screen name="Профіль">
+            {() => <ProfileScreen user={user} onSignOut={signOut} isAdmin={isAdmin} />}
+          </Tab.Screen>
+        </Tab.Navigator>
   );
 };
 
