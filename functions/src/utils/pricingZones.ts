@@ -124,3 +124,62 @@ export const VALID_CATEGORIES: LandCategory[] = [
 export const isValidCategory = (category: string): category is LandCategory => {
   return VALID_CATEGORIES.includes(category as LandCategory);
 };
+
+const BASE32 = '0123456789bcdefghjkmnpqrstuvwxyz';
+
+export const encodeGeohash = (latitude: number, longitude: number, precision: number = 9): string => {
+  let latMin = -90, latMax = 90;
+  let lngMin = -180, lngMax = 180;
+  let hash = '';
+  let bit = 0;
+  let ch = 0;
+  let isLng = true;
+
+  while (hash.length < precision) {
+    if (isLng) {
+      const mid = (lngMin + lngMax) / 2;
+      if (longitude >= mid) {
+        ch |= (1 << (4 - bit));
+        lngMin = mid;
+      } else {
+        lngMax = mid;
+      }
+    } else {
+      const mid = (latMin + latMax) / 2;
+      if (latitude >= mid) {
+        ch |= (1 << (4 - bit));
+        latMin = mid;
+      } else {
+        latMax = mid;
+      }
+    }
+
+    isLng = !isLng;
+    bit++;
+
+    if (bit === 5) {
+      hash += BASE32[ch];
+      bit = 0;
+      ch = 0;
+    }
+  }
+
+  return hash;
+};
+
+export const getGeohashNeighbors = (geohash: string): string[] => {
+  const neighbors: string[] = [geohash];
+  const precision = geohash.length;
+  
+  if (precision > 1) {
+    const parent = geohash.slice(0, -1);
+    for (let i = 0; i < 32; i++) {
+      const neighbor = parent + BASE32[i];
+      if (neighbor !== geohash) {
+        neighbors.push(neighbor);
+      }
+    }
+  }
+  
+  return neighbors;
+};

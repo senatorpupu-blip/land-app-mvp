@@ -44,6 +44,23 @@ export interface ComputedPricing {
   marketStatus: MarketStatus;
 }
 
+// Land Intelligence computed fields
+export interface LandIntelligence {
+  pricePerHectare: number;
+  priceVsOblastAverage: number;
+  investmentScore: number;
+  lastCalculatedAt: Date;
+}
+
+// Premium listing fields
+export interface PremiumListing {
+  isPremium: boolean;
+  isPromoted: boolean;
+  premiumExpiresAt?: Date;
+  promotedExpiresAt?: Date;
+  premiumPurchasedAt?: Date;
+}
+
 // Land Plot Types
 export interface LandPlot {
   id: string;
@@ -60,6 +77,7 @@ export interface LandPlot {
     latitude: number;
     longitude: number;
     address: string;
+    geohash?: string;
   };
   cadastralNumber: string;
   cadastralVerified: boolean;
@@ -78,6 +96,10 @@ export interface LandPlot {
   rejectedBy?: string;
   // Computed pricing fields
   pricing?: ComputedPricing;
+  // Land intelligence fields
+  intelligence?: LandIntelligence;
+  // Premium listing fields
+  premium?: PremiumListing;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -93,6 +115,9 @@ export interface User {
   displayName?: string;
   role: UserRole;
   isBlocked?: boolean;
+  isSoftBanned?: boolean;
+  softBanReason?: string;
+  softBannedAt?: Date;
   createdAt: Date;
   updatedAt?: Date;
 }
@@ -117,7 +142,41 @@ export interface Message {
   read: boolean;
 }
 
-// Filter Types
+// Advanced Search Filter Types
+export interface SearchFilters {
+  oblast?: string;
+  region?: string;
+  boundingBox?: {
+    north: number;
+    south: number;
+    east: number;
+    west: number;
+  };
+  category?: LandCategory;
+  minPrice?: number;
+  maxPrice?: number;
+  minPricePerSotka?: number;
+  maxPricePerSotka?: number;
+  minArea?: number;
+  maxArea?: number;
+  minInvestmentScore?: number;
+  isInvestmentPlot?: boolean;
+  isCreditAvailable?: boolean;
+  isPremium?: boolean;
+  isPromoted?: boolean;
+  zone?: 'A' | 'B' | 'C';
+  pricingZone?: PricingZone;
+}
+
+// Search result with pagination
+export interface SearchResult {
+  plots: LandPlot[];
+  totalCount: number;
+  hasMore: boolean;
+  nextCursor?: string;
+}
+
+// Legacy Filter Types (for backward compatibility)
 export interface PlotFilters {
   minPrice?: number;
   maxPrice?: number;
@@ -130,4 +189,46 @@ export interface AuthState {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+}
+
+// Land Analytics Types
+export interface OblastAnalytics {
+  id: string;
+  oblast: string;
+  category: LandCategory;
+  averagePricePerSotka: number;
+  medianPricePerSotka: number;
+  minPricePerSotka: number;
+  maxPricePerSotka: number;
+  totalListings: number;
+  approvedListings: number;
+  calculatedAt: Date;
+}
+
+// Admin Analytics Types
+export interface AdminAnalytics {
+  totalListings: number;
+  approvedListings: number;
+  pendingListings: number;
+  rejectedListings: number;
+  deletedListings: number;
+  totalUsers: number;
+  blockedUsers: number;
+  softBannedUsers: number;
+  averagePriceByOblast: Record<string, number>;
+  listingsByCategory: Record<string, number>;
+  calculatedAt: Date;
+}
+
+// Payment abstraction types
+export interface PaymentIntent {
+  id: string;
+  userId: string;
+  plotId: string;
+  type: 'premium' | 'promotion';
+  amount: number;
+  currency: 'UAH';
+  status: 'pending' | 'completed' | 'failed' | 'cancelled';
+  createdAt: Date;
+  completedAt?: Date;
 }

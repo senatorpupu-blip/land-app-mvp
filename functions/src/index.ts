@@ -1,11 +1,11 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
-import { CreateLandPlotRequest, ComputedPricing, LandCategory } from './types';
+import { CreateLandPlotRequest, ComputedPricing, LandCategory, PricingZone } from './types';
 import { 
   findNearestOblastCenter, 
   determinePricingZone, 
   determineMarketStatus,
-  isValidCategory 
+  isValidCategory
 } from './utils/pricingZones';
 import { 
   validateCadastralFormat, 
@@ -13,6 +13,7 @@ import {
   extractOblastFromCadastral 
 } from './utils/cadastral';
 import { getPricingRuleWithFallback } from './services/pricingRules';
+import { sanitizeText, RateLimiter } from './utils/security';
 
 admin.initializeApp();
 
@@ -20,6 +21,9 @@ const db = admin.firestore();
 
 const PLOTS_COLLECTION = 'plots';
 const USERS_COLLECTION = 'users';
+const ANALYTICS_COLLECTION = 'landAnalytics';
+
+const rateLimiter = new RateLimiter(100, 60000);
 
 interface CreateLandPlotResponse {
   success: boolean;
@@ -374,3 +378,587 @@ export const recomputePricingForPlot = functions.https.onCall(
     };
   }
 );
+
+interface SearchFilters {
+  oblast?: string;
+  region?: string;
+  category?: LandCategory;
+  minPrice?: number;
+  maxPrice?: number;
+  minPricePerSotka?: number;
+  maxPricePerSotka?: number;
+  minArea?: number;
+  maxArea?: number;
+  minInvestmentScore?: number;
+  isInvestmentPlot?: boolean;
+  isCreditAvailable?: boolean;
+  isPremium?: boolean;
+  isPromoted?: boolean;
+  zone?: 'A' | 'B' | 'C';
+  pricingZone?: PricingZone;
+  boundingBox?: {
+    north: number;
+    south: number;
+    east: number;
+    west: number;
+  };
+}
+
+interface SearchRequest {
+  filters: SearchFilters;
+  pageSize?: number;
+  cursor?: string;
+  sortBy?: 'createdAt' | 'totalPrice' | 'pricePerSotka' | 'area' | 'investmentScore';
+  sortOrder?: 'asc' | 'desc';
+}
+
+interface SearchResponse {
+  success: boolean;
+  result?: {
+    plots: any[];
+    totalCount: number;
+    hasMore: boolean;
+    nextCursor?: string;
+  };
+  error?: string;
+}
+
+export const searchLandPlots = functions.https.onCall(
+  async (data: SearchRequest, context): Promise<SearchResponse> => {
+    const userId = context.auth?.uid || 'anonymous';
+    
+    if (!rateLimiter.isAllowed(userId)) {
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        'Too many requests. Please try again later.'
+      );
+    }
+
+    const { filters = {}, pageSize = 20, sortBy = 'createdAt', sortOrder = 'desc' } = data;
+    const effectivePageSize = Math.min(pageSize, 100);
+
+    let query: admin.firestore.Query = db.collection(PLOTS_COLLECTION)
+      .where('status', '==', 'approved');
+
+    if (filters.oblast) {
+      query = query.where('oblast', '==', filters.oblast);
+    }
+    if (filters.category) {
+      query = query.where('category', '==', filters.category);
+    }
+    if (filters.zone) {
+      query = query.where('zone', '==', filters.zone);
+    }
+    if (filters.pricingZone) {
+      query = query.where('pricing.pricingZone', '==', filters.pricingZone);
+    }
+    if (filters.isInvestmentPlot !== undefined) {
+      query = query.where('isInvestmentPlot', '==', filters.isInvestmentPlot);
+    }
+    if (filters.isCreditAvailable !== undefined) {
+      query = query.where('isCreditAvailable', '==', filters.isCreditAvailable);
+    }
+
+    query = query.orderBy(sortBy, sortOrder).limit(effectivePageSize + 1);
+
+    const snapshot = await query.get();
+    let plots = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    if (filters.minPrice !== undefined) {
+      plots = plots.filter((p: any) => p.totalPrice >= filters.minPrice!);
+    }
+    if (filters.maxPrice !== undefined) {
+      plots = plots.filter((p: any) => p.totalPrice <= filters.maxPrice!);
+    }
+    if (filters.minArea !== undefined) {
+      plots = plots.filter((p: any) => p.area >= filters.minArea!);
+    }
+    if (filters.maxArea !== undefined) {
+      plots = plots.filter((p: any) => p.area <= filters.maxArea!);
+    }
+    if (filters.minInvestmentScore !== undefined) {
+      plots = plots.filter((p: any) => (p.intelligence?.investmentScore || 0) >= filters.minInvestmentScore!);
+    }
+    if (filters.boundingBox) {
+      const { north, south, east, west } = filters.boundingBox;
+      plots = plots.filter((p: any) => {
+        const lat = p.location?.latitude;
+        const lng = p.location?.longitude;
+        return lat >= south && lat <= north && lng >= west && lng <= east;
+      });
+    }
+
+    const promotedPlots = plots.filter((p: any) => {
+      if (!p.premium?.isPromoted) return false;
+      if (!p.premium.promotedExpiresAt) return true;
+      return new Date() < p.premium.promotedExpiresAt.toDate();
+    });
+    const regularPlots = plots.filter((p: any) => {
+      if (!p.premium?.isPromoted) return true;
+      if (!p.premium.promotedExpiresAt) return false;
+      return new Date() >= p.premium.promotedExpiresAt.toDate();
+    });
+    plots = [...promotedPlots, ...regularPlots];
+
+    const hasMore = plots.length > effectivePageSize;
+    if (hasMore) {
+      plots = plots.slice(0, effectivePageSize);
+    }
+
+    const nextCursor = hasMore && plots.length > 0 ? plots[plots.length - 1].id : undefined;
+
+    return {
+      success: true,
+      result: {
+        plots,
+        totalCount: plots.length,
+        hasMore,
+        nextCursor,
+      },
+    };
+  }
+);
+
+const calculateInvestmentScore = (plot: any, oblastAvgPrice: number): number => {
+  let score = 50;
+  
+  if (plot.pricing?.marketStatus === 'below_market') {
+    score += 20;
+  } else if (plot.pricing?.marketStatus === 'above_market') {
+    score -= 15;
+  }
+  
+  if (oblastAvgPrice > 0 && plot.pricePerSotka < oblastAvgPrice * 0.8) {
+    score += 15;
+  } else if (oblastAvgPrice > 0 && plot.pricePerSotka > oblastAvgPrice * 1.2) {
+    score -= 10;
+  }
+  
+  if (plot.pricing?.pricingZone === 'urban_core') {
+    score += 10;
+  } else if (plot.pricing?.pricingZone === 'suburban_0_15') {
+    score += 5;
+  }
+  
+  if (plot.category === 'residential' || plot.category === 'commercial') {
+    score += 5;
+  }
+  
+  if (plot.isInvestmentPlot) {
+    score += 5;
+  }
+  
+  return Math.max(0, Math.min(100, score));
+};
+
+export const calculateOblastAnalytics = functions.pubsub
+  .schedule('every 24 hours')
+  .onRun(async () => {
+    functions.logger.info('Starting daily oblast analytics calculation');
+    
+    const plotsSnapshot = await db.collection(PLOTS_COLLECTION)
+      .where('status', '==', 'approved')
+      .get();
+    
+    const oblastData: Record<string, Record<string, number[]>> = {};
+    
+    plotsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      const oblast = data.oblast || 'unknown';
+      const category = data.category || 'unknown';
+      const pricePerSotka = data.pricePerSotka || 0;
+      
+      if (!oblastData[oblast]) {
+        oblastData[oblast] = {};
+      }
+      if (!oblastData[oblast][category]) {
+        oblastData[oblast][category] = [];
+      }
+      oblastData[oblast][category].push(pricePerSotka);
+    });
+    
+    const batch = db.batch();
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    
+    for (const [oblast, categories] of Object.entries(oblastData)) {
+      for (const [category, prices] of Object.entries(categories)) {
+        if (prices.length === 0) continue;
+        
+        const sorted = [...prices].sort((a, b) => a - b);
+        const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+        const median = sorted.length % 2 === 0
+          ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+          : sorted[Math.floor(sorted.length / 2)];
+        
+        const analyticsRef = db.collection(ANALYTICS_COLLECTION).doc(`${oblast}_${category}`);
+        batch.set(analyticsRef, {
+          oblast,
+          category,
+          averagePricePerSotka: Math.round(avg * 100) / 100,
+          medianPricePerSotka: Math.round(median * 100) / 100,
+          minPricePerSotka: Math.min(...prices),
+          maxPricePerSotka: Math.max(...prices),
+          totalListings: prices.length,
+          approvedListings: prices.length,
+          calculatedAt: now,
+        });
+      }
+    }
+    
+    await batch.commit();
+    functions.logger.info('Oblast analytics calculation completed', {
+      oblastsProcessed: Object.keys(oblastData).length,
+    });
+    
+    return null;
+  });
+
+export const updatePlotIntelligence = functions.firestore
+  .document('plots/{plotId}')
+  .onWrite(async (change, context) => {
+    if (!change.after.exists) return;
+    
+    const plotData = change.after.data();
+    if (!plotData || plotData.status !== 'approved') return;
+    
+    const oblast = plotData.oblast || 'unknown';
+    const category = plotData.category || 'unknown';
+    
+    const analyticsDoc = await db.collection(ANALYTICS_COLLECTION)
+      .doc(`${oblast}_${category}`)
+      .get();
+    
+    const oblastAvgPrice = analyticsDoc.exists 
+      ? analyticsDoc.data()?.averagePricePerSotka || 0 
+      : 0;
+    
+    const pricePerHectare = (plotData.pricePerSotka || 0) * 100;
+    const priceVsOblastAverage = oblastAvgPrice > 0 
+      ? Math.round((plotData.pricePerSotka / oblastAvgPrice) * 100) 
+      : 100;
+    const investmentScore = calculateInvestmentScore(plotData, oblastAvgPrice);
+    
+    const intelligence = {
+      pricePerHectare,
+      priceVsOblastAverage,
+      investmentScore,
+      lastCalculatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    
+    const currentIntelligence = plotData.intelligence;
+    if (
+      currentIntelligence?.pricePerHectare === pricePerHectare &&
+      currentIntelligence?.priceVsOblastAverage === priceVsOblastAverage &&
+      currentIntelligence?.investmentScore === investmentScore
+    ) {
+      return;
+    }
+    
+    await change.after.ref.update({ intelligence });
+  });
+
+interface AdminAnalyticsResponse {
+  success: boolean;
+  analytics?: {
+    totalListings: number;
+    approvedListings: number;
+    pendingListings: number;
+    rejectedListings: number;
+    deletedListings: number;
+    totalUsers: number;
+    blockedUsers: number;
+    softBannedUsers: number;
+    averagePriceByOblast: Record<string, number>;
+    listingsByCategory: Record<string, number>;
+    calculatedAt: Date;
+  };
+  error?: string;
+}
+
+export const getAdminAnalytics = functions.https.onCall(
+  async (data, context): Promise<AdminAnalyticsResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+
+    const userDoc = await db.collection(USERS_COLLECTION).doc(context.auth.uid).get();
+    if (!userDoc.exists || userDoc.data()?.role !== 'admin') {
+      throw new functions.https.HttpsError('permission-denied', 'Admin access required');
+    }
+
+    const [plotsSnapshot, usersSnapshot, analyticsSnapshot] = await Promise.all([
+      db.collection(PLOTS_COLLECTION).get(),
+      db.collection(USERS_COLLECTION).get(),
+      db.collection(ANALYTICS_COLLECTION).get(),
+    ]);
+
+    let totalListings = 0, approvedListings = 0, pendingListings = 0, rejectedListings = 0, deletedListings = 0;
+    const listingsByCategory: Record<string, number> = {};
+
+    plotsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      totalListings++;
+      
+      switch (data.status) {
+        case 'approved': approvedListings++; break;
+        case 'pending': pendingListings++; break;
+        case 'rejected': rejectedListings++; break;
+        case 'deleted': deletedListings++; break;
+      }
+      
+      const category = data.category || 'unknown';
+      listingsByCategory[category] = (listingsByCategory[category] || 0) + 1;
+    });
+
+    let totalUsers = 0, blockedUsers = 0, softBannedUsers = 0;
+    usersSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      totalUsers++;
+      if (data.isBlocked) blockedUsers++;
+      if (data.isSoftBanned) softBannedUsers++;
+    });
+
+    const averagePriceByOblast: Record<string, number> = {};
+    analyticsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      if (!averagePriceByOblast[data.oblast]) {
+        averagePriceByOblast[data.oblast] = data.averagePricePerSotka;
+      }
+    });
+
+    return {
+      success: true,
+      analytics: {
+        totalListings,
+        approvedListings,
+        pendingListings,
+        rejectedListings,
+        deletedListings,
+        totalUsers,
+        blockedUsers,
+        softBannedUsers,
+        averagePriceByOblast,
+        listingsByCategory,
+        calculatedAt: new Date(),
+      },
+    };
+  }
+);
+
+interface BulkActionRequest {
+  plotIds: string[];
+  action: 'approve' | 'reject';
+  reason?: string;
+}
+
+export const bulkModerateListings = functions.https.onCall(
+  async (data: BulkActionRequest, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+
+    const userDoc = await db.collection(USERS_COLLECTION).doc(context.auth.uid).get();
+    if (!userDoc.exists || userDoc.data()?.role !== 'admin') {
+      throw new functions.https.HttpsError('permission-denied', 'Admin access required');
+    }
+
+    if (!data.plotIds || !Array.isArray(data.plotIds) || data.plotIds.length === 0) {
+      throw new functions.https.HttpsError('invalid-argument', 'Plot IDs required');
+    }
+
+    if (data.plotIds.length > 50) {
+      throw new functions.https.HttpsError('invalid-argument', 'Maximum 50 plots per batch');
+    }
+
+    const batch = db.batch();
+    const now = admin.firestore.FieldValue.serverTimestamp();
+
+    for (const plotId of data.plotIds) {
+      const plotRef = db.collection(PLOTS_COLLECTION).doc(plotId);
+      
+      if (data.action === 'approve') {
+        batch.update(plotRef, {
+          status: 'approved',
+          approvedAt: now,
+          approvedBy: context.auth.uid,
+          updatedAt: now,
+        });
+      } else {
+        batch.update(plotRef, {
+          status: 'rejected',
+          rejectedAt: now,
+          rejectedBy: context.auth.uid,
+          rejectReason: sanitizeText(data.reason || 'Bulk rejection'),
+          updatedAt: now,
+        });
+      }
+    }
+
+    await batch.commit();
+
+    functions.logger.info('Bulk moderation completed', {
+      action: data.action,
+      count: data.plotIds.length,
+      adminId: context.auth.uid,
+    });
+
+    return { success: true, processedCount: data.plotIds.length };
+  }
+);
+
+interface SoftBanRequest {
+  userId: string;
+  ban: boolean;
+  reason?: string;
+}
+
+export const softBanUser = functions.https.onCall(
+  async (data: SoftBanRequest, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+
+    const adminDoc = await db.collection(USERS_COLLECTION).doc(context.auth.uid).get();
+    if (!adminDoc.exists || adminDoc.data()?.role !== 'admin') {
+      throw new functions.https.HttpsError('permission-denied', 'Admin access required');
+    }
+
+    if (!data.userId) {
+      throw new functions.https.HttpsError('invalid-argument', 'User ID required');
+    }
+
+    const userRef = db.collection(USERS_COLLECTION).doc(data.userId);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'User not found');
+    }
+
+    if (data.ban) {
+      await userRef.update({
+        isSoftBanned: true,
+        softBanReason: sanitizeText(data.reason || 'Policy violation'),
+        softBannedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } else {
+      await userRef.update({
+        isSoftBanned: false,
+        softBanReason: admin.firestore.FieldValue.delete(),
+        softBannedAt: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    functions.logger.info('User soft ban status changed', {
+      userId: data.userId,
+      banned: data.ban,
+      adminId: context.auth.uid,
+    });
+
+    return { success: true };
+  }
+);
+
+interface PremiumRequest {
+  plotId: string;
+  type: 'premium' | 'promotion';
+  durationDays: number;
+}
+
+export const activatePremiumListing = functions.https.onCall(
+  async (data: PremiumRequest, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+
+    if (!data.plotId || !data.type || !data.durationDays) {
+      throw new functions.https.HttpsError('invalid-argument', 'Missing required fields');
+    }
+
+    if (data.durationDays < 1 || data.durationDays > 365) {
+      throw new functions.https.HttpsError('invalid-argument', 'Duration must be 1-365 days');
+    }
+
+    const plotRef = db.collection(PLOTS_COLLECTION).doc(data.plotId);
+    const plotDoc = await plotRef.get();
+
+    if (!plotDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'Plot not found');
+    }
+
+    const plotData = plotDoc.data();
+    if (plotData?.ownerId !== context.auth.uid) {
+      const userDoc = await db.collection(USERS_COLLECTION).doc(context.auth.uid).get();
+      if (!userDoc.exists || userDoc.data()?.role !== 'admin') {
+        throw new functions.https.HttpsError('permission-denied', 'Not authorized');
+      }
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + data.durationDays * 24 * 60 * 60 * 1000);
+
+    const premiumUpdate: any = {
+      'premium.isPremium': data.type === 'premium' ? true : (plotData?.premium?.isPremium || false),
+      'premium.isPromoted': data.type === 'promotion' ? true : (plotData?.premium?.isPromoted || false),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (data.type === 'premium') {
+      premiumUpdate['premium.premiumExpiresAt'] = expiresAt;
+      premiumUpdate['premium.premiumPurchasedAt'] = now;
+    } else {
+      premiumUpdate['premium.promotedExpiresAt'] = expiresAt;
+    }
+
+    await plotRef.update(premiumUpdate);
+
+    functions.logger.info('Premium listing activated', {
+      plotId: data.plotId,
+      type: data.type,
+      durationDays: data.durationDays,
+      userId: context.auth.uid,
+    });
+
+    return { success: true, expiresAt };
+  }
+);
+
+export const expirePremiumListings = functions.pubsub
+  .schedule('every 1 hours')
+  .onRun(async () => {
+    const now = new Date();
+    
+    const premiumExpired = await db.collection(PLOTS_COLLECTION)
+      .where('premium.isPremium', '==', true)
+      .where('premium.premiumExpiresAt', '<=', now)
+      .get();
+
+    const promotedExpired = await db.collection(PLOTS_COLLECTION)
+      .where('premium.isPromoted', '==', true)
+      .where('premium.promotedExpiresAt', '<=', now)
+      .get();
+
+    const batch = db.batch();
+    let count = 0;
+
+    premiumExpired.docs.forEach(doc => {
+      batch.update(doc.ref, { 'premium.isPremium': false });
+      count++;
+    });
+
+    promotedExpired.docs.forEach(doc => {
+      batch.update(doc.ref, { 'premium.isPromoted': false });
+      count++;
+    });
+
+    if (count > 0) {
+      await batch.commit();
+      functions.logger.info('Expired premium listings processed', { count });
+    }
+
+    return null;
+  });
