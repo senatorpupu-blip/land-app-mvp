@@ -173,4 +173,28 @@ describe('Currency Utility Functions', () => {
       expect(hectaresToSotkas(NaN)).toBe(0);
     });
   });
+
+  describe('Edge cases for large values', () => {
+    it('should handle very large prices', () => {
+      const result = formatPriceUAH(999999999);
+      expect(result).toContain('999');
+    });
+
+    it('should handle very large areas', () => {
+      const result = formatArea(100000);
+      expect(result).toContain('1000');
+      expect(result).toContain('га');
+    });
+
+    it('should handle decimal areas', () => {
+      const result = formatArea(15.5);
+      expect(result).toContain('15');
+    });
+
+    it('should handle billions in compact format', () => {
+      const result = formatPriceUAHCompact(1500000000);
+      // Large values are shown in millions
+      expect(result).toContain('млн');
+    });
+  });
 });
