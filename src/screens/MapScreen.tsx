@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   View, 
   Text, 
@@ -11,27 +11,25 @@ import {
   ActivityIndicator
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, UrlTile, Region } from 'react-native-maps';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { db } from '../config/firebase';
 import { theme } from '../config/theme';
 import { FilterModal } from '../components';
 import { LandPlot, PlotFilters } from '../types';
+import { MapService, BoundingBox, extractUniqueRegions } from '../services/mapService';
+import {
+  UKRAINE_CENTER,
+  regionToBoundingBox,
+  getPlotCoordinates,
+} from '../utils/mapUtils';
+import { formatPriceUAH, formatPricePerHectareUAH, calculatePricePerHectare } from '../utils/currency';
 
 interface MapScreenProps {
   navigation: any;
 }
 
-const { width, height } = Dimensions.get('window');
-
-// Ukraine center coordinates (Kyiv)
-const UKRAINE_CENTER = {
-  latitude: 48.3794,
-  longitude: 31.1656,
-  latitudeDelta: 8.0,
-  longitudeDelta: 8.0,
-};
+const { width } = Dimensions.get('window');
 
 const INITIAL_REGION = UKRAINE_CENTER;
+const DEBOUNCE_MS = 400;
 
 export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
   const [plots, setPlots] = useState<LandPlot[]>([]);
@@ -41,60 +39,53 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
   const [selectedPlot, setSelectedPlot] = useState<LandPlot | null>(null);
   const [showCadastralOverlay, setShowCadastralOverlay] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isOffline, setIsOffline] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [regions, setRegions] = useState<string[]>([]);
+  const [hasMore, setHasMore] = useState(true);
+  
   const mapRef = useRef<MapView>(null);
+  const mapServiceRef = useRef<MapService | null>(null);
+  const hasInitialFit = useRef(false);
 
-  // Subscribe to Firestore plots collection in real-time
   useEffect(() => {
-    const plotsRef = collection(db, 'plots');
-    const q = query(plotsRef, where('status', '==', 'approved'));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const loadedPlots: LandPlot[] = snapshot.docs.map(doc => {
-        const data = doc.data();
-        return {
-          id: doc.id,
-          ...data,
-          createdAt: data.createdAt?.toDate() || new Date(),
-          updatedAt: data.updatedAt?.toDate() || new Date(),
-        } as LandPlot;
-      });
-      
-      setPlots(loadedPlots);
-      setFilteredPlots(loadedPlots);
-      
-      // Extract unique regions from loaded plots
-      const uniqueRegions = [...new Set(loadedPlots.map(p => p.region).filter(Boolean))];
-      setRegions(uniqueRegions);
-      
-      setIsLoading(false);
-      
-      // Auto-fit map to markers if there are plots
-      if (loadedPlots.length > 0 && mapRef.current) {
-        const coordinates = loadedPlots.map(p => ({
-          latitude: p.location.latitude,
-          longitude: p.location.longitude,
-        }));
+    const mapService = new MapService({
+      onPlotsUpdate: (newPlots) => {
+        setPlots(newPlots);
+        setRegions(extractUniqueRegions(newPlots));
         
-        // Fit map to show all markers with padding
-        setTimeout(() => {
-          mapRef.current?.fitToCoordinates(coordinates, {
-            edgePadding: { top: 100, right: 50, bottom: 150, left: 50 },
-            animated: true,
-          });
-        }, 500);
-      }
-    }, (error) => {
-      console.error('Error loading plots:', error);
-      setIsLoading(false);
+        if (!hasInitialFit.current && newPlots.length > 0 && mapRef.current) {
+          hasInitialFit.current = true;
+          const coordinates = getPlotCoordinates(newPlots);
+          if (coordinates.length > 0) {
+            setTimeout(() => {
+              mapRef.current?.fitToCoordinates(coordinates, {
+                edgePadding: { top: 100, right: 50, bottom: 150, left: 50 },
+                animated: true,
+              });
+            }, 500);
+          }
+        }
+      },
+      onLoadingChange: setIsLoading,
+      onOfflineChange: setIsOffline,
+      onError: setError,
+      onHasMoreChange: setHasMore,
     });
-    
-    return () => unsubscribe();
+
+    mapServiceRef.current = mapService;
+    mapService.subscribeToPlots();
+
+    return () => {
+      mapService.cleanup();
+    };
   }, []);
 
-  const applyFilters = (newFilters: PlotFilters) => {
-    setFilters(newFilters);
-    
+  useEffect(() => {
+    applyFilters(filters);
+  }, [plots, filters]);
+
+  const applyFilters = useCallback((newFilters: PlotFilters) => {
     let result = [...plots];
     
     if (newFilters.minPrice !== undefined) {
@@ -111,9 +102,20 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
     }
     
     setFilteredPlots(result);
-  };
+  }, [plots]);
 
-  const getMarkerColor = (zone: string) => {
+  const handleFiltersApply = useCallback((newFilters: PlotFilters) => {
+    setFilters(newFilters);
+  }, []);
+
+  const handleRegionChange = useCallback((region: Region) => {
+    if (!mapServiceRef.current) return;
+    
+    const boundingBox: BoundingBox = regionToBoundingBox(region);
+    mapServiceRef.current.onRegionChange(boundingBox, DEBOUNCE_MS);
+  }, []);
+
+  const getMarkerColor = useCallback((zone: string) => {
     switch (zone) {
       case 'A':
         return theme.colors.zoneA;
@@ -124,27 +126,36 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
       default:
         return theme.colors.primary;
     }
-  };
+  }, []);
 
-  const formatPrice = (price: number) => {
-    return price.toLocaleString('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      maximumFractionDigits: 0,
-    });
-  };
-
-  const handleMarkerPress = (plot: LandPlot) => {
+  const handleMarkerPress = useCallback((plot: LandPlot) => {
     setSelectedPlot(plot);
-  };
+  }, []);
 
-  const handlePlotPress = () => {
+  const handlePlotPress = useCallback(() => {
     if (selectedPlot) {
       navigation.navigate('PlotDetail', { plot: selectedPlot });
     }
-  };
+  }, [selectedPlot, navigation]);
+
+  const handleLoadMore = useCallback(() => {
+    if (mapServiceRef.current && hasMore && !isLoading) {
+      mapServiceRef.current.loadMorePlots();
+    }
+  }, [hasMore, isLoading]);
+
+  const handleRetry = useCallback(() => {
+    if (mapServiceRef.current) {
+      setError(null);
+      mapServiceRef.current.subscribeToPlots();
+    }
+  }, []);
 
   const activeFiltersCount = Object.values(filters).filter(v => v !== undefined).length;
+
+  const getPricePerHectare = useCallback((plot: LandPlot): string => {
+    return formatPricePerHectareUAH(plot.pricePerSotka);
+  }, []);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -160,14 +171,31 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
         </TouchableOpacity>
       </View>
 
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>
+            You are offline. Showing cached data.
+          </Text>
+        </View>
+      )}
+
+      {error && !isOffline && (
+        <View style={styles.errorBanner}>
+          <Text style={styles.errorBannerText}>{error}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <View style={styles.mapContainer}>
         <MapView
           ref={mapRef}
           style={styles.map}
           initialRegion={INITIAL_REGION}
           provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
+          onRegionChangeComplete={handleRegionChange}
         >
-          {/* Ukrainian cadastral overlay */}
           {showCadastralOverlay && (
             <UrlTile
               urlTemplate="https://map.land.gov.ua/geowebcache/service/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&FORMAT=image/png&TRANSPARENT=true&LAYERS=kadastr&WIDTH=256&HEIGHT=256&SRS=EPSG:3857&BBOX={minX},{minY},{maxX},{maxY}"
@@ -186,11 +214,11 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
               }}
               pinColor={getMarkerColor(plot.zone)}
               onPress={() => handleMarkerPress(plot)}
+              tracksViewChanges={false}
             />
           ))}
         </MapView>
 
-        {/* Selected Plot Card */}
         {selectedPlot && (
           <TouchableOpacity 
             style={styles.selectedCard}
@@ -211,9 +239,12 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
               </View>
               <Text style={styles.cardRegion}>{selectedPlot.region}</Text>
               <View style={styles.cardDetails}>
-                <Text style={styles.cardArea}>{selectedPlot.area} sotkas</Text>
-                <Text style={styles.cardPrice}>{formatPrice(selectedPlot.totalPrice)}</Text>
+                <Text style={styles.cardArea}>{selectedPlot.area} соток</Text>
+                <Text style={styles.cardPrice}>{formatPriceUAH(selectedPlot.totalPrice)}</Text>
               </View>
+              <Text style={styles.cardPricePerHectare}>
+                {getPricePerHectare(selectedPlot)}
+              </Text>
               <Text style={styles.tapHint}>Tap to view details</Text>
             </View>
             <TouchableOpacity 
@@ -225,7 +256,6 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
           </TouchableOpacity>
         )}
 
-        {/* Legend */}
         <View style={styles.legend}>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: theme.colors.zoneA }]} />
@@ -249,17 +279,28 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
             />
           </View>
         </View>
+
+        {hasMore && !isLoading && filteredPlots.length > 0 && (
+          <TouchableOpacity style={styles.loadMoreButton} onPress={handleLoadMore}>
+            <Text style={styles.loadMoreText}>Load more plots</Text>
+          </TouchableOpacity>
+        )}
+
+        <View style={styles.plotCount}>
+          <Text style={styles.plotCountText}>
+            {filteredPlots.length} plots
+          </Text>
+        </View>
       </View>
 
       <FilterModal
         visible={showFilters}
         onClose={() => setShowFilters(false)}
-        onApply={applyFilters}
+        onApply={handleFiltersApply}
         currentFilters={filters}
         regions={regions}
       />
 
-      {/* Loading overlay */}
       {isLoading && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
@@ -297,6 +338,42 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
   },
   filterButtonText: {
+    color: theme.colors.primary,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '500',
+  },
+  offlineBanner: {
+    backgroundColor: '#FFA500',
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    alignItems: 'center',
+  },
+  offlineBannerText: {
+    color: theme.colors.background,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '500',
+  },
+  errorBanner: {
+    backgroundColor: '#FF4444',
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  errorBannerText: {
+    color: theme.colors.text,
+    fontSize: theme.fontSize.sm,
+    flex: 1,
+  },
+  retryButton: {
+    backgroundColor: theme.colors.surface,
+    paddingVertical: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.borderRadius.sm,
+    marginLeft: theme.spacing.sm,
+  },
+  retryButtonText: {
     color: theme.colors.primary,
     fontSize: theme.fontSize.sm,
     fontWeight: '500',
@@ -365,6 +442,11 @@ const styles = StyleSheet.create({
     fontSize: theme.fontSize.lg,
     fontWeight: '700',
   },
+  cardPricePerHectare: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
+    marginTop: theme.spacing.xs,
+  },
   tapHint: {
     color: theme.colors.textMuted,
     fontSize: theme.fontSize.xs,
@@ -410,6 +492,34 @@ const styles = StyleSheet.create({
     paddingTop: theme.spacing.sm,
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
+  },
+  loadMoreButton: {
+    position: 'absolute',
+    bottom: theme.spacing.xl + 80,
+    left: theme.spacing.md,
+    right: theme.spacing.md,
+    backgroundColor: theme.colors.primary,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+    alignItems: 'center',
+  },
+  loadMoreText: {
+    color: theme.colors.text,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '500',
+  },
+  plotCount: {
+    position: 'absolute',
+    top: theme.spacing.md,
+    left: theme.spacing.md,
+    backgroundColor: theme.colors.surface,
+    paddingVertical: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: theme.borderRadius.sm,
+  },
+  plotCountText: {
+    color: theme.colors.text,
+    fontSize: theme.fontSize.xs,
   },
   loadingOverlay: {
     position: 'absolute',

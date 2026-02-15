@@ -67,8 +67,7 @@ export const createPlot = async (
     
     return result.data.plotId;
   } catch (error: any) {
-    console.error('Error creating plot:', error);
-    // Handle Firebase Functions errors
+        // Handle Firebase Functions errors
     if (error.code) {
       throw new Error(error.message || 'Failed to create plot');
     }
@@ -101,8 +100,7 @@ export const updatePlot = async (
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
-    console.error('Error updating plot:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -110,8 +108,7 @@ export const deletePlot = async (plotId: string): Promise<void> => {
   try {
     await deleteDoc(doc(db, PLOTS_COLLECTION, plotId));
   } catch (error) {
-    console.error('Error deleting plot:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -131,8 +128,7 @@ export const getPlot = async (plotId: string): Promise<LandPlot | null> => {
       updatedAt: data.updatedAt?.toDate() || new Date(),
     } as LandPlot;
   } catch (error) {
-    console.error('Error getting plot:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -175,8 +171,7 @@ export const getPlots = async (filters?: PlotFilters): Promise<LandPlot[]> => {
     
     return plots;
   } catch (error) {
-    console.error('Error getting plots:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -200,8 +195,7 @@ export const getPlotsByOwner = async (ownerId: string): Promise<LandPlot[]> => {
       } as LandPlot;
     });
   } catch (error) {
-    console.error('Error getting plots by owner:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -220,7 +214,6 @@ export const uploadPlotImage = async (
     const downloadUrl = await getDownloadURL(imageRef);
     return downloadUrl;
   } catch (error) {
-    console.error('Error uploading image:', error);
-    throw error;
+        throw error;
   }
 };

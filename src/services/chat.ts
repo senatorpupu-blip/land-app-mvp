@@ -39,7 +39,6 @@ export const createChat = async (
     
     return docRef.id;
   } catch (error) {
-    console.error('Error creating chat:', error);
     throw error;
   }
 };
@@ -73,8 +72,7 @@ export const findChat = async (
       lastMessageAt: data.lastMessageAt?.toDate(),
     } as Chat;
   } catch (error) {
-    console.error('Error finding chat:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -94,8 +92,7 @@ export const getChat = async (chatId: string): Promise<Chat | null> => {
       lastMessageAt: data.lastMessageAt?.toDate(),
     } as Chat;
   } catch (error) {
-    console.error('Error getting chat:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -140,8 +137,7 @@ export const getUserChats = async (userId: string): Promise<Chat[]> => {
       return bTime - aTime;
     });
   } catch (error) {
-    console.error('Error getting user chats:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -171,8 +167,7 @@ export const sendMessage = async (
     
     return messageRef.id;
   } catch (error) {
-    console.error('Error sending message:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -194,8 +189,7 @@ export const getMessages = async (chatId: string): Promise<Message[]> => {
       } as Message;
     });
   } catch (error) {
-    console.error('Error getting messages:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -240,7 +234,6 @@ export const markMessagesAsRead = async (
     
     await Promise.all(updates);
   } catch (error) {
-    console.error('Error marking messages as read:', error);
-    throw error;
+        throw error;
   }
 };

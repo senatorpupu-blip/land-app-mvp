@@ -21,13 +21,11 @@ export const sendOTP = async (phoneNumber: string): Promise<boolean> => {
     
     // Store phone number for verification step
     // In real implementation, this would trigger SMS via Firebase
-    console.log('Sending OTP to:', phoneNumber);
     
     // For MVP demo purposes, we'll simulate OTP sending
     // In production, use Firebase Phone Auth with proper setup
     return true;
   } catch (error) {
-    console.error('Error sending OTP:', error);
     throw error;
   }
 };
@@ -71,7 +69,6 @@ export const verifyOTP = async (phoneNumber: string, otp: string): Promise<User 
       createdAt: userData.createdAt?.toDate() || new Date(),
     };
   } catch (error) {
-    console.error('Error verifying OTP:', error);
     throw error;
   }
 };
@@ -80,7 +77,6 @@ export const signOut = async (): Promise<void> => {
   try {
     await firebaseSignOut(auth);
   } catch (error) {
-    console.error('Error signing out:', error);
     throw error;
   }
 };

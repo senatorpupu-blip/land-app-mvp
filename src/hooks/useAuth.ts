@@ -34,7 +34,6 @@ export const useAuth = () => {
         });
       }
     } catch (error) {
-      console.error('Error loading user:', error);
       setState({
         user: null,
         isLoading: false,
@@ -47,7 +46,6 @@ export const useAuth = () => {
     try {
       return await sendOTP(phoneNumber);
     } catch (error) {
-      console.error('Error requesting OTP:', error);
       throw error;
     }
   }, []);
@@ -67,7 +65,6 @@ export const useAuth = () => {
       
       return user;
     } catch (error) {
-      console.error('Error confirming OTP:', error);
       throw error;
     }
   }, []);
@@ -82,7 +79,6 @@ export const useAuth = () => {
         isAuthenticated: false,
       });
     } catch (error) {
-      console.error('Error signing out:', error);
       throw error;
     }
   }, []);

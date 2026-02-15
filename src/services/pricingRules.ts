@@ -41,8 +41,7 @@ export const getPricingRule = async (
       updatedAt: data.updatedAt?.toDate() || new Date(),
     } as PricingRule;
   } catch (error) {
-    console.error('Error getting pricing rule:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -66,8 +65,7 @@ export const getPricingRulesByOblast = async (
       } as PricingRule;
     });
   } catch (error) {
-    console.error('Error getting pricing rules by oblast:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -84,8 +82,7 @@ export const getAllPricingRules = async (): Promise<PricingRule[]> => {
       } as PricingRule;
     });
   } catch (error) {
-    console.error('Error getting all pricing rules:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -103,8 +100,7 @@ export const createPricingRule = async (
     
     return ruleId;
   } catch (error) {
-    console.error('Error creating pricing rule:', error);
-    throw error;
+        throw error;
   }
 };
 
@@ -120,8 +116,7 @@ export const updatePricingRule = async (
       updatedAt: serverTimestamp(),
     }, { merge: true });
   } catch (error) {
-    console.error('Error updating pricing rule:', error);
-    throw error;
+        throw error;
   }
 };
 
