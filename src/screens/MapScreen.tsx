@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, 
   Text, 
@@ -11,7 +11,6 @@ import {
   ActivityIndicator
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, UrlTile, Region } from 'react-native-maps';
-import ClusteredMapView from 'react-native-map-clustering';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { theme } from '../config/theme';
@@ -135,58 +134,17 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
     });
   };
 
-  // Memoize marker press handler for performance
-  const handleMarkerPress = useCallback((plot: LandPlot) => {
+  const handleMarkerPress = (plot: LandPlot) => {
     setSelectedPlot(plot);
-  }, []);
+  };
 
-  const handlePlotPress = useCallback(() => {
+  const handlePlotPress = () => {
     if (selectedPlot) {
       navigation.navigate('PlotDetail', { plot: selectedPlot });
     }
-  }, [selectedPlot, navigation]);
+  };
 
   const activeFiltersCount = Object.values(filters).filter(v => v !== undefined).length;
-
-  // Custom cluster rendering for performance and styling
-  const renderCluster = useCallback((cluster: any) => {
-    const { id, geometry, onPress, properties } = cluster;
-    const points = properties.point_count;
-    
-    return (
-      <Marker
-        key={`cluster-${id}`}
-        coordinate={{
-          longitude: geometry.coordinates[0],
-          latitude: geometry.coordinates[1],
-        }}
-        onPress={onPress}
-      >
-        <View style={styles.clusterContainer}>
-          <View style={styles.clusterMarker}>
-            <Text style={styles.clusterText}>{points}</Text>
-          </View>
-        </View>
-      </Marker>
-    );
-  }, []);
-
-  // Memoize markers for performance with 1000+ plots
-  const memoizedMarkers = useMemo(() => {
-    return filteredPlots.map((plot) => (
-      <Marker
-        key={plot.id}
-        identifier={plot.id}
-        coordinate={{
-          latitude: plot.location.latitude,
-          longitude: plot.location.longitude,
-        }}
-        pinColor={getMarkerColor(plot.zone)}
-        onPress={() => handleMarkerPress(plot)}
-        tracksViewChanges={false}
-      />
-    ));
-  }, [filteredPlots, handleMarkerPress]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -203,26 +161,11 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
       </View>
 
       <View style={styles.mapContainer}>
-        <ClusteredMapView
+        <MapView
           ref={mapRef}
           style={styles.map}
           initialRegion={INITIAL_REGION}
           provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
-          clusterColor={theme.colors.primary}
-          clusterTextColor={theme.colors.text}
-          clusterFontFamily="System"
-          radius={50}
-          maxZoom={16}
-          minZoom={1}
-          minPoints={2}
-          extent={512}
-          nodeSize={64}
-          renderCluster={renderCluster}
-          animationEnabled={true}
-          preserveClusterPressBehavior={true}
-          spiderLineColor={theme.colors.border}
-          superClusterRef={{ current: null }}
-          mapRef={(ref: any) => { mapRef.current = ref; }}
         >
           {/* Ukrainian cadastral overlay */}
           {showCadastralOverlay && (
@@ -234,8 +177,18 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
             />
           )}
           
-          {memoizedMarkers}
-        </ClusteredMapView>
+          {filteredPlots.map((plot) => (
+            <Marker
+              key={plot.id}
+              coordinate={{
+                latitude: plot.location.latitude,
+                longitude: plot.location.longitude,
+              }}
+              pinColor={getMarkerColor(plot.zone)}
+              onPress={() => handleMarkerPress(plot)}
+            />
+          ))}
+        </MapView>
 
         {/* Selected Plot Card */}
         {selectedPlot && (
@@ -472,31 +425,5 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
     fontSize: theme.fontSize.md,
     marginTop: theme.spacing.md,
-  },
-  clusterContainer: {
-    width: 40,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  clusterMarker: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: theme.colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: theme.colors.text,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-  clusterText: {
-    color: theme.colors.text,
-    fontSize: theme.fontSize.sm,
-    fontWeight: '700',
   },
 });
