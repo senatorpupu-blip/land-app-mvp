@@ -12,6 +12,7 @@ import {
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../config/firebase';
 import { LandPlot, SearchFilters, SearchResult, LandCategory, PricingZone } from '../types';
+import { parsePlotDocument, isPromotedAndActive, sortWithPromotedFirst } from '../utils/firestoreParser';
 
 const PLOTS_COLLECTION = 'plots';
 const DEFAULT_PAGE_SIZE = 20;
@@ -30,44 +31,6 @@ export interface SearchResponse {
   result?: SearchResult;
   error?: string;
 }
-
-const parseFirestorePlot = (doc: DocumentSnapshot): LandPlot => {
-  const data = doc.data();
-  if (!data) {
-    throw new Error('Document data is undefined');
-  }
-  return {
-    id: doc.id,
-    ...data,
-    createdAt: data.createdAt?.toDate() || new Date(),
-    updatedAt: data.updatedAt?.toDate() || new Date(),
-    approvedAt: data.approvedAt?.toDate(),
-    rejectedAt: data.rejectedAt?.toDate(),
-    deletedAt: data.deletedAt?.toDate(),
-    intelligence: data.intelligence ? {
-      ...data.intelligence,
-      lastCalculatedAt: data.intelligence.lastCalculatedAt?.toDate() || new Date(),
-    } : undefined,
-    premium: data.premium ? {
-      ...data.premium,
-      premiumExpiresAt: data.premium.premiumExpiresAt?.toDate(),
-      promotedExpiresAt: data.premium.promotedExpiresAt?.toDate(),
-      premiumPurchasedAt: data.premium.premiumPurchasedAt?.toDate(),
-    } : undefined,
-  } as LandPlot;
-};
-
-const isPromotedAndActive = (plot: LandPlot): boolean => {
-  if (!plot.premium?.isPromoted) return false;
-  if (!plot.premium.promotedExpiresAt) return true;
-  return new Date() < plot.premium.promotedExpiresAt;
-};
-
-const isPremiumAndActive = (plot: LandPlot): boolean => {
-  if (!plot.premium?.isPremium) return false;
-  if (!plot.premium.premiumExpiresAt) return true;
-  return new Date() < plot.premium.premiumExpiresAt;
-};
 
 export const searchPlots = async (request: SearchRequest): Promise<SearchResult> => {
   const { filters, pageSize = DEFAULT_PAGE_SIZE, cursor, sortBy = 'createdAt', sortOrder = 'desc' } = request;
@@ -119,7 +82,9 @@ export const searchPlots = async (request: SearchRequest): Promise<SearchResult>
   
   const querySnapshot = await getDocs(q);
   
-  let plots: LandPlot[] = querySnapshot.docs.map(parseFirestorePlot);
+  let plots: LandPlot[] = querySnapshot.docs
+    .map(parsePlotDocument)
+    .filter((p): p is LandPlot => p !== null);
   
   if (filters.minPrice !== undefined) {
     plots = plots.filter(p => p.totalPrice >= filters.minPrice!);
