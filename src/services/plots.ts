@@ -1,7 +1,6 @@
 import { 
   collection, 
   doc, 
-  addDoc, 
   updateDoc, 
   deleteDoc, 
   getDoc, 
@@ -12,82 +11,67 @@ import {
   serverTimestamp,
   Timestamp
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../config/firebase';
+import { db, storage, functions } from '../config/firebase';
 import { LandPlot, PlotFilters, LandCategory, ComputedPricing } from '../types';
-import { calculateComputedPricing } from '../utils/pricingZones';
-import { getPricingRule } from './pricingRules';
-import { validateCadastralFormat, getCadastralValidationStatus, extractOblastFromCadastral } from '../utils/cadastral';
 
 const PLOTS_COLLECTION = 'plots';
 
+export interface CreatePlotRequest {
+  title: string;
+  description: string;
+  area: number;
+  pricePerSotka: number;
+  zone: 'A' | 'B' | 'C';
+  region: string;
+  location: {
+    latitude: number;
+    longitude: number;
+    address: string;
+  };
+  cadastralNumber: string;
+  photos: string[];
+  isInvestmentPlot: boolean;
+  isCreditAvailable: boolean;
+  category?: LandCategory;
+  oblast?: string;
+}
+
+export interface CreatePlotResponse {
+  success: boolean;
+  plotId?: string;
+  error?: string;
+  pricing?: ComputedPricing;
+}
+
+/**
+ * Create a land plot using the Cloud Function.
+ * All pricing and zone computations are done server-side.
+ * Direct Firestore create is disabled - must use this function.
+ */
 export const createPlot = async (
-  plotData: Omit<LandPlot, 'id' | 'createdAt' | 'updatedAt' | 'totalPrice' | 'status' | 'pricing' | 'cadastralValidationStatus'>
+  plotData: CreatePlotRequest
 ): Promise<string> => {
   try {
-    const totalPrice = plotData.area * plotData.pricePerSotka;
-    
-    // Validate cadastral number format
-    const cadastralValidationStatus = getCadastralValidationStatus(
-      plotData.cadastralNumber,
-      plotData.cadastralVerified
+    const createLandPlot = httpsCallable<CreatePlotRequest, CreatePlotResponse>(
+      functions,
+      'createLandPlot'
     );
     
-    // Calculate computed pricing if category and location are provided
-    let pricing: ComputedPricing | undefined;
-    if (plotData.category && plotData.location) {
-      // Try to get pricing rule for the oblast
-      const oblastFromCadastral = extractOblastFromCadastral(plotData.cadastralNumber);
-      const oblastId = plotData.oblast || oblastFromCadastral || 'default';
-      
-      const pricingRule = await getPricingRule(
-        oblastId,
-        plotData.category,
-        'urban_core' // Will be recalculated based on distance
-      ).catch(() => null);
-      
-      // Calculate computed pricing with zone detection
-      pricing = calculateComputedPricing(
-        plotData.location.latitude,
-        plotData.location.longitude,
-        plotData.area,
-        plotData.pricePerSotka,
-        pricingRule || undefined
-      );
-      
-      // If we got a different zone, try to get the correct pricing rule
-      if (pricingRule && pricing.pricingZone !== 'urban_core') {
-        const correctPricingRule = await getPricingRule(
-          oblastId,
-          plotData.category,
-          pricing.pricingZone
-        ).catch(() => null);
-        
-        if (correctPricingRule) {
-          pricing = calculateComputedPricing(
-            plotData.location.latitude,
-            plotData.location.longitude,
-            plotData.area,
-            plotData.pricePerSotka,
-            correctPricingRule
-          );
-        }
-      }
+    const result = await createLandPlot(plotData);
+    
+    if (!result.data.success || !result.data.plotId) {
+      throw new Error(result.data.error || 'Failed to create plot');
     }
     
-    const docRef = await addDoc(collection(db, PLOTS_COLLECTION), {
-      ...plotData,
-      totalPrice,
-      status: 'pending',
-      cadastralValidationStatus,
-      ...(pricing && { pricing }),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    
-    return docRef.id;
-  } catch (error) {
+    return result.data.plotId;
+  } catch (error: any) {
     console.error('Error creating plot:', error);
+    // Handle Firebase Functions errors
+    if (error.code) {
+      throw new Error(error.message || 'Failed to create plot');
+    }
     throw error;
   }
 };
