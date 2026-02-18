@@ -1347,3 +1347,287 @@ export const checkSlugUniqueness = functions.https.onCall(
     return { isUnique: existing.empty };
   }
 );
+
+// ============================================
+// MONOBANK PAYMENT INTEGRATION
+// ============================================
+
+const PAYMENTS_COLLECTION = 'payments';
+const FREE_LISTINGS_LIMIT = 2;
+const LISTING_FEE_UAH = 250;
+
+interface CreateListingPaymentRequest {
+  userId: string;
+  listingId: string;
+}
+
+interface CreateListingPaymentResponse {
+  success: boolean;
+  paymentUrl?: string;
+  invoiceId?: string;
+  error?: string;
+}
+
+/**
+ * Create a payment invoice for listing publication via Monobank API
+ * User gets 2 free listings, 3rd+ requires 250 UAH payment
+ */
+export const createListingPayment = functions.https.onCall(
+  async (data: CreateListingPaymentRequest, context): Promise<CreateListingPaymentResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const userId = context.auth.uid;
+
+    if (!data.listingId || typeof data.listingId !== 'string') {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'ID оголошення є обов\'язковим.'
+      );
+    }
+
+    // Check user's listing count
+    const userListingsSnapshot = await db.collection(PLOTS_COLLECTION)
+      .where('ownerId', '==', userId)
+      .where('status', 'in', ['pending', 'approved'])
+      .get();
+
+    const listingCount = userListingsSnapshot.size;
+
+    // If user has less than FREE_LISTINGS_LIMIT, no payment needed
+    if (listingCount < FREE_LISTINGS_LIMIT) {
+      return {
+        success: true,
+        invoiceId: 'free',
+      };
+    }
+
+    // Create payment record in Firestore
+    const paymentData = {
+      userId,
+      listingId: data.listingId,
+      amount: LISTING_FEE_UAH,
+      currency: 'UAH',
+      status: 'pending',
+      type: 'listing_fee',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    const paymentRef = await db.collection(PAYMENTS_COLLECTION).add(paymentData);
+    const invoiceId = paymentRef.id;
+
+    // In production, this would call Monobank API to create invoice
+    // For now, we return a mock payment URL
+    // Monobank API: POST https://api.monobank.ua/api/merchant/invoice/create
+    const monobankToken = functions.config().monobank?.token;
+    
+    if (!monobankToken) {
+      // Development mode - return mock URL
+      functions.logger.warn('Monobank token not configured, using mock payment');
+      
+      const mockPaymentUrl = `https://pay.example.com/invoice/${invoiceId}?amount=${LISTING_FEE_UAH}`;
+      
+      await paymentRef.update({
+        paymentUrl: mockPaymentUrl,
+        invoiceId,
+      });
+
+      return {
+        success: true,
+        paymentUrl: mockPaymentUrl,
+        invoiceId,
+      };
+    }
+
+    // Production Monobank API call
+    try {
+      const response = await fetch('https://api.monobank.ua/api/merchant/invoice/create', {
+        method: 'POST',
+        headers: {
+          'X-Token': monobankToken,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          amount: LISTING_FEE_UAH * 100, // Monobank expects amount in kopiykas
+          ccy: 980, // UAH currency code
+          merchantPaymInfo: {
+            reference: invoiceId,
+            destination: `Публікація оголошення #${data.listingId}`,
+          },
+          redirectUrl: `https://land-app.example.com/payment/success?invoiceId=${invoiceId}`,
+          webHookUrl: `https://us-central1-land-app-mvp.cloudfunctions.net/monobankWebhook`,
+          validity: 3600, // 1 hour validity
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.errText || 'Monobank API error');
+      }
+
+      await paymentRef.update({
+        paymentUrl: result.pageUrl,
+        monobankInvoiceId: result.invoiceId,
+      });
+
+      functions.logger.info('Monobank invoice created', {
+        invoiceId,
+        monobankInvoiceId: result.invoiceId,
+        userId,
+        listingId: data.listingId,
+      });
+
+      return {
+        success: true,
+        paymentUrl: result.pageUrl,
+        invoiceId,
+      };
+    } catch (error: any) {
+      functions.logger.error('Monobank API error', { error: error.message, userId });
+      
+      await paymentRef.update({
+        status: 'failed',
+        error: error.message,
+      });
+
+      return {
+        success: false,
+        error: 'Не вдалося створити платіж. Спробуйте пізніше.',
+      };
+    }
+  }
+);
+
+interface MonobankWebhookData {
+  invoiceId: string;
+  status: string;
+  amount: number;
+  ccy: number;
+  reference: string;
+  createdDate: string;
+  modifiedDate: string;
+}
+
+/**
+ * Webhook handler for Monobank payment notifications
+ */
+export const monobankWebhook = functions.https.onRequest(
+  async (req, res) => {
+    if (req.method !== 'POST') {
+      res.status(405).send('Method not allowed');
+      return;
+    }
+
+    const data = req.body as MonobankWebhookData;
+
+    if (!data.reference) {
+      functions.logger.error('Monobank webhook: missing reference');
+      res.status(400).send('Missing reference');
+      return;
+    }
+
+    const paymentRef = db.collection(PAYMENTS_COLLECTION).doc(data.reference);
+    const paymentDoc = await paymentRef.get();
+
+    if (!paymentDoc.exists) {
+      functions.logger.error('Monobank webhook: payment not found', { reference: data.reference });
+      res.status(404).send('Payment not found');
+      return;
+    }
+
+    const paymentData = paymentDoc.data();
+
+    if (data.status === 'success') {
+      // Payment successful - update payment and listing status
+      await paymentRef.update({
+        status: 'completed',
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        monobankStatus: data.status,
+      });
+
+      // Update listing to allow publication
+      if (paymentData?.listingId) {
+        await db.collection(PLOTS_COLLECTION).doc(paymentData.listingId).update({
+          paymentStatus: 'paid',
+          paymentId: data.reference,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+
+      functions.logger.info('Payment completed', {
+        invoiceId: data.reference,
+        listingId: paymentData?.listingId,
+        amount: data.amount,
+      });
+    } else if (data.status === 'failure' || data.status === 'expired') {
+      // Payment failed or expired
+      await paymentRef.update({
+        status: 'failed',
+        failedAt: admin.firestore.FieldValue.serverTimestamp(),
+        monobankStatus: data.status,
+      });
+
+      functions.logger.info('Payment failed', {
+        invoiceId: data.reference,
+        status: data.status,
+      });
+    }
+
+    res.status(200).send('OK');
+  }
+);
+
+/**
+ * Check payment status for a listing
+ */
+export const checkPaymentStatus = functions.https.onCall(
+  async (data: { listingId: string }, context): Promise<{ status: string; requiresPayment: boolean }> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const userId = context.auth.uid;
+
+    // Check user's listing count
+    const userListingsSnapshot = await db.collection(PLOTS_COLLECTION)
+      .where('ownerId', '==', userId)
+      .where('status', 'in', ['pending', 'approved'])
+      .get();
+
+    const listingCount = userListingsSnapshot.size;
+
+    if (listingCount < FREE_LISTINGS_LIMIT) {
+      return {
+        status: 'free',
+        requiresPayment: false,
+      };
+    }
+
+    // Check if there's a completed payment for this listing
+    const paymentSnapshot = await db.collection(PAYMENTS_COLLECTION)
+      .where('listingId', '==', data.listingId)
+      .where('status', '==', 'completed')
+      .limit(1)
+      .get();
+
+    if (!paymentSnapshot.empty) {
+      return {
+        status: 'paid',
+        requiresPayment: false,
+      };
+    }
+
+    return {
+      status: 'pending',
+      requiresPayment: true,
+    };
+  }
+);
