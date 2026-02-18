@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   View, 
   Text, 
@@ -7,10 +7,9 @@ import {
   SafeAreaView,
   Dimensions,
   Platform,
-  Switch,
   ActivityIndicator
 } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE, UrlTile, Region } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { theme } from '../config/theme';
 import { FilterModal } from '../components';
 import { LandPlot, PlotFilters } from '../types';
@@ -38,7 +37,6 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
   const [filters, setFilters] = useState<PlotFilters>({});
   const [showFilters, setShowFilters] = useState(false);
   const [selectedPlot, setSelectedPlot] = useState<LandPlot | null>(null);
-  const [showCadastralOverlay, setShowCadastralOverlay] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isOffline, setIsOffline] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -194,18 +192,9 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
           ref={mapRef}
           style={styles.map}
           initialRegion={INITIAL_REGION}
-          provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
+          provider={PROVIDER_GOOGLE}
           onRegionChangeComplete={handleRegionChange}
         >
-          {showCadastralOverlay && (
-            <UrlTile
-              urlTemplate="https://map.land.gov.ua/geowebcache/service/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&FORMAT=image/png&TRANSPARENT=true&LAYERS=kadastr&WIDTH=256&HEIGHT=256&SRS=EPSG:3857&BBOX={minX},{minY},{maxX},{maxY}"
-              maximumZ={19}
-              flipY={false}
-              zIndex={1}
-            />
-          )}
-          
           {filteredPlots.map((plot) => (
             <Marker
               key={plot.id}
@@ -269,15 +258,6 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: theme.colors.zoneC }]} />
             <Text style={styles.legendText}>{uk.plots.fields.zone} C</Text>
-          </View>
-          <View style={styles.cadastralToggle}>
-            <Text style={styles.legendText}>{uk.map.showCadastral}</Text>
-            <Switch
-              value={showCadastralOverlay}
-              onValueChange={setShowCadastralOverlay}
-              trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
-              thumbColor={theme.colors.text}
-            />
           </View>
         </View>
 
@@ -484,15 +464,6 @@ const styles = StyleSheet.create({
   legendText: {
     color: theme.colors.text,
     fontSize: theme.fontSize.xs,
-  },
-  cadastralToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: theme.spacing.sm,
-    paddingTop: theme.spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
   },
   loadMoreButton: {
     position: 'absolute',
