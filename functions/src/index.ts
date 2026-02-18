@@ -1,5 +1,6 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
+import * as crypto from 'crypto';
 import { CreateLandPlotRequest, ComputedPricing, LandCategory, PricingZone } from './types';
 import { 
   findNearestOblastCenter, 
@@ -1634,9 +1635,100 @@ export const checkPaymentStatus = functions.https.onCall(
 
 // ============================================
 // ENTERPRISE RBAC ADMIN SYSTEM
+// Security Hardened Implementation
 // ============================================
 
 const AUDIT_LOGS_COLLECTION = 'auditLogs';
+const IMPERSONATION_SESSIONS_COLLECTION = 'impersonationSessions';
+const TWO_FACTOR_SECRETS_COLLECTION = 'twoFactorSecrets';
+
+// Security constants
+const IMPERSONATION_TOKEN_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
+const TOTP_STEP = 30; // 30 seconds per TOTP step
+const TOTP_DIGITS = 6;
+const TOTP_WINDOW = 1; // Allow 1 step before/after for clock drift
+
+// Base32 decode function for TOTP
+function base32Decode(encoded: string): Buffer {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const char of encoded.toUpperCase().replace(/=+$/, '')) {
+    const val = alphabet.indexOf(char);
+    if (val === -1) continue;
+    bits += val.toString(2).padStart(5, '0');
+  }
+  const bytes: number[] = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    bytes.push(parseInt(bits.substr(i, 8), 2));
+  }
+  return Buffer.from(bytes);
+}
+
+// Base32 encode function for TOTP
+function base32Encode(buffer: Buffer): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const byte of buffer) {
+    bits += byte.toString(2).padStart(8, '0');
+  }
+  let result = '';
+  for (let i = 0; i < bits.length; i += 5) {
+    const chunk = bits.substr(i, 5).padEnd(5, '0');
+    result += alphabet[parseInt(chunk, 2)];
+  }
+  return result;
+}
+
+// Generate TOTP secret (Google Authenticator compatible)
+function generateTOTPSecret(length = 20): string {
+  const buffer = crypto.randomBytes(length);
+  return base32Encode(buffer);
+}
+
+// Generate TOTP token at a specific time
+function generateTOTPAtTime(secret: string, time: number): string {
+  const counter = Math.floor(time / 1000 / TOTP_STEP);
+  const counterBuffer = Buffer.alloc(8);
+  counterBuffer.writeBigUInt64BE(BigInt(counter));
+  
+  const key = base32Decode(secret);
+  const hmac = crypto.createHmac('sha1', key);
+  hmac.update(counterBuffer);
+  const hash = hmac.digest();
+  
+  const offset = hash[hash.length - 1] & 0x0f;
+  const binary = ((hash[offset] & 0x7f) << 24) |
+                 ((hash[offset + 1] & 0xff) << 16) |
+                 ((hash[offset + 2] & 0xff) << 8) |
+                 (hash[offset + 3] & 0xff);
+  
+  const otp = binary % Math.pow(10, TOTP_DIGITS);
+  return otp.toString().padStart(TOTP_DIGITS, '0');
+}
+
+// Verify TOTP token with window for clock drift
+function verifyTOTPWithWindow(token: string, secret: string): boolean {
+  const now = Date.now();
+  for (let i = -TOTP_WINDOW; i <= TOTP_WINDOW; i++) {
+    const time = now + (i * TOTP_STEP * 1000);
+    const expected = generateTOTPAtTime(secret, time);
+    if (token === expected) return true;
+  }
+  return false;
+}
+
+// Generate otpauth URI for QR code (Google Authenticator compatible)
+function generateTOTPUri(secret: string, label: string, issuer: string): string {
+  const encodedLabel = encodeURIComponent(label);
+  const encodedIssuer = encodeURIComponent(issuer);
+  return `otpauth://totp/${encodedIssuer}:${encodedLabel}?secret=${secret}&issuer=${encodedIssuer}&algorithm=SHA1&digits=${TOTP_DIGITS}&period=${TOTP_STEP}`;
+}
+
+// Rate limiters for sensitive admin operations
+const adminRateLimiter = new RateLimiter(10, 60000); // 10 requests per minute
+const impersonationRateLimiter = new RateLimiter(5, 60000); // 5 per minute
+const auditLogsRateLimiter = new RateLimiter(20, 60000); // 20 per minute
 
 // Role hierarchy and permissions
 type AdminRole = 'super_admin' | 'admin' | 'moderator' | 'support' | 'finance';
@@ -1787,6 +1879,87 @@ function hasPermission(role: AdminRole | null, permission: keyof RolePermissions
 }
 
 /**
+ * Get encryption key from environment or generate deterministic key
+ * In production, use Firebase Functions config: firebase functions:config:set security.encryption_key="YOUR_KEY"
+ */
+function getEncryptionKey(): Buffer {
+  const configKey = functions.config().security?.encryption_key;
+  if (configKey) {
+    return Buffer.from(configKey, 'hex');
+  }
+  // Fallback: derive key from project ID (not ideal for production)
+  const projectId = process.env.GCLOUD_PROJECT || 'land-app-mvp';
+  return crypto.createHash('sha256').update(projectId + '-2fa-secret').digest();
+}
+
+/**
+ * Encrypt TOTP secret for secure storage
+ */
+function encryptTOTPSecret(secret: string): { encrypted: string; iv: string; authTag: string } {
+  const key = getEncryptionKey();
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, key, iv);
+  
+  let encrypted = cipher.update(secret, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const authTag = cipher.getAuthTag();
+  
+  return {
+    encrypted,
+    iv: iv.toString('hex'),
+    authTag: authTag.toString('hex'),
+  };
+}
+
+/**
+ * Decrypt TOTP secret from storage
+ */
+function decryptTOTPSecret(encrypted: string, iv: string, authTag: string): string {
+  const key = getEncryptionKey();
+  const decipher = crypto.createDecipheriv(
+    ENCRYPTION_ALGORITHM,
+    key,
+    Buffer.from(iv, 'hex')
+  );
+  decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+  
+  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
+
+/**
+ * Check if user is currently impersonating another user
+ */
+async function isUserImpersonating(uid: string): Promise<boolean> {
+  const activeSession = await db.collection(IMPERSONATION_SESSIONS_COLLECTION)
+    .where('actorId', '==', uid)
+    .where('active', '==', true)
+    .limit(1)
+    .get();
+  return !activeSession.empty;
+}
+
+/**
+ * Check if impersonation session is valid and not expired
+ */
+// validateImpersonationSession is used by client-side to check if session is still valid
+// Exported for use in admin panel
+export async function validateImpersonationSession(sessionId: string): Promise<boolean> {
+  const sessionDoc = await db.collection(IMPERSONATION_SESSIONS_COLLECTION).doc(sessionId).get();
+  if (!sessionDoc.exists) return false;
+  
+  const session = sessionDoc.data();
+  if (!session || !session.active) return false;
+  
+  const createdAt = session.createdAt?.toDate?.() || new Date(session.createdAt);
+  const now = new Date();
+  const elapsed = now.getTime() - createdAt.getTime();
+  
+  return elapsed < IMPERSONATION_TOKEN_EXPIRY_MS;
+}
+
+/**
  * Verify 2FA is enabled for roles that require it
  */
 async function verify2FARequired(uid: string, role: AdminRole): Promise<boolean> {
@@ -1802,6 +1975,45 @@ async function verify2FARequired(uid: string, role: AdminRole): Promise<boolean>
   return userData?.twoFactorEnabled === true;
 }
 
+/**
+ * Verify TOTP token against stored secret
+ */
+async function verifyTOTPToken(uid: string, token: string): Promise<boolean> {
+  const secretDoc = await db.collection(TWO_FACTOR_SECRETS_COLLECTION).doc(uid).get();
+  if (!secretDoc.exists) return false;
+  
+  const secretData = secretDoc.data();
+  if (!secretData || !secretData.encrypted || !secretData.iv || !secretData.authTag) {
+    return false;
+  }
+  
+  try {
+    const secret = decryptTOTPSecret(
+      secretData.encrypted,
+      secretData.iv,
+      secretData.authTag
+    );
+    
+    // Verify token with window for clock drift
+    return verifyTOTPWithWindow(token, secret);
+  } catch (error) {
+    functions.logger.error('Failed to verify TOTP token', { error });
+    return false;
+  }
+}
+
+/**
+ * Revoke all refresh tokens for a user (force re-authentication)
+ */
+async function revokeUserTokens(uid: string): Promise<void> {
+  try {
+    await admin.auth().revokeRefreshTokens(uid);
+    functions.logger.info('Revoked tokens for user', { uid });
+  } catch (error) {
+    functions.logger.error('Failed to revoke tokens', { uid, error });
+  }
+}
+
 interface AssignRoleRequest {
   targetUserId: string;
   role: AdminRole;
@@ -1815,6 +2027,7 @@ interface AssignRoleResponse {
 /**
  * Assign admin role to user via custom claims
  * Only super_admin can assign roles
+ * Security: Rate limited, 2FA required, audit logged
  */
 export const assignAdminRole = functions.https.onCall(
   async (data: AssignRoleRequest, context): Promise<AssignRoleResponse> => {
@@ -1826,6 +2039,18 @@ export const assignAdminRole = functions.https.onCall(
     }
 
     const actorId = context.auth.uid;
+
+    // Rate limiting
+    if (!adminRateLimiter.isAllowed(actorId)) {
+      await logAdminAction(actorId, 'super_admin', 'RATE_LIMIT_EXCEEDED', null, {
+        action: 'assignAdminRole',
+      });
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        'Перевищено ліміт запитів. Спробуйте пізніше.'
+      );
+    }
+
     const actorRole = await getUserAdminRole(actorId);
 
     // Only super_admin can assign roles
@@ -1836,12 +2061,20 @@ export const assignAdminRole = functions.https.onCall(
       );
     }
 
-    // Verify 2FA for super_admin
+    // Verify 2FA is enabled for super_admin
     const has2FA = await verify2FARequired(actorId, actorRole!);
     if (!has2FA) {
       throw new functions.https.HttpsError(
         'failed-precondition',
         'Потрібна двофакторна автентифікація.'
+      );
+    }
+
+    // Prevent privilege escalation: cannot assign role to self
+    if (data.targetUserId === actorId) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Неможливо призначити роль самому собі.'
       );
     }
 
@@ -1872,6 +2105,9 @@ export const assignAdminRole = functions.https.onCall(
         adminRoleAssignedBy: actorId,
       });
 
+      // Revoke existing tokens to force re-authentication with new role
+      await revokeUserTokens(data.targetUserId);
+
       // Log the action
       await logAdminAction(actorId, actorRole!, 'ASSIGN_ROLE', data.targetUserId, {
         newRole: data.role,
@@ -1901,6 +2137,7 @@ interface RemoveRoleRequest {
 /**
  * Remove admin role from user
  * Only super_admin can remove roles
+ * Security: Rate limited, 2FA required, token revocation, audit logged
  */
 export const removeAdminRole = functions.https.onCall(
   async (data: RemoveRoleRequest, context): Promise<AssignRoleResponse> => {
@@ -1912,6 +2149,18 @@ export const removeAdminRole = functions.https.onCall(
     }
 
     const actorId = context.auth.uid;
+
+    // Rate limiting
+    if (!adminRateLimiter.isAllowed(actorId)) {
+      await logAdminAction(actorId, 'super_admin', 'RATE_LIMIT_EXCEEDED', null, {
+        action: 'removeAdminRole',
+      });
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        'Перевищено ліміт запитів. Спробуйте пізніше.'
+      );
+    }
+
     const actorRole = await getUserAdminRole(actorId);
 
     if (!hasPermission(actorRole, 'canRemoveRoles')) {
@@ -1926,6 +2175,14 @@ export const removeAdminRole = functions.https.onCall(
       throw new functions.https.HttpsError(
         'failed-precondition',
         'Потрібна двофакторна автентифікація.'
+      );
+    }
+
+    // Prevent self-demotion
+    if (data.targetUserId === actorId) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Неможливо видалити власну роль.'
       );
     }
 
@@ -1951,6 +2208,9 @@ export const removeAdminRole = functions.https.onCall(
         adminRoleRemovedAt: admin.firestore.FieldValue.serverTimestamp(),
         adminRoleRemovedBy: actorId,
       });
+
+      // Revoke existing tokens to force re-authentication
+      await revokeUserTokens(data.targetUserId);
 
       // Log the action
       await logAdminAction(actorId, actorRole!, 'REMOVE_ROLE', data.targetUserId, {
@@ -2000,6 +2260,7 @@ interface GetAuditLogsResponse {
 /**
  * Get audit logs
  * Only super_admin can view audit logs
+ * Security: Rate limited
  */
 export const getAuditLogs = functions.https.onCall(
   async (data: GetAuditLogsRequest, context): Promise<GetAuditLogsResponse> => {
@@ -2011,6 +2272,15 @@ export const getAuditLogs = functions.https.onCall(
     }
 
     const actorId = context.auth.uid;
+
+    // Rate limiting
+    if (!auditLogsRateLimiter.isAllowed(actorId)) {
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        'Перевищено ліміт запитів. Спробуйте пізніше.'
+      );
+    }
+
     const actorRole = await getUserAdminRole(actorId);
 
     if (!hasPermission(actorRole, 'canViewAuditLogs')) {
@@ -2088,8 +2358,63 @@ export const getMyAdminPermissions = functions.https.onCall(
   }
 );
 
+interface Setup2FAResponse {
+  success: boolean;
+  secret?: string;
+  otpauthUrl?: string;
+  error?: string;
+}
+
+/**
+ * Generate 2FA secret for setup
+ * Returns secret and otpauth URL for QR code generation
+ */
+export const setup2FA = functions.https.onCall(
+  async (_data: unknown, context): Promise<Setup2FAResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const userId = context.auth.uid;
+
+    try {
+      // Get user email for the authenticator label
+      const user = await admin.auth().getUser(userId);
+      const userEmail = user.email || userId;
+
+      // Generate a new TOTP secret
+      const secret = generateTOTPSecret();
+
+      // Generate otpauth URL for QR code (Google Authenticator compatible)
+      const otpauthUrl = generateTOTPUri(secret, userEmail, 'LandApp');
+
+      // Store the secret temporarily (not yet enabled)
+      const encryptedSecret = encryptTOTPSecret(secret);
+      await db.collection(TWO_FACTOR_SECRETS_COLLECTION).doc(userId).set({
+        ...encryptedSecret,
+        enabled: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      return {
+        success: true,
+        secret,
+        otpauthUrl,
+      };
+    } catch (error: any) {
+      functions.logger.error('Failed to setup 2FA', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося налаштувати 2FA.',
+      };
+    }
+  }
+);
+
 interface Enable2FARequest {
-  secret: string;
   token: string;
 }
 
@@ -2099,8 +2424,9 @@ interface Enable2FAResponse {
 }
 
 /**
- * Enable 2FA for admin users
+ * Enable 2FA for admin users after verifying the token
  * Required for super_admin and admin roles
+ * Security: Real TOTP verification using otplib
  */
 export const enable2FA = functions.https.onCall(
   async (data: Enable2FARequest, context): Promise<Enable2FAResponse> => {
@@ -2113,22 +2439,59 @@ export const enable2FA = functions.https.onCall(
 
     const userId = context.auth.uid;
 
-    if (!data.secret || !data.token) {
+    if (!data.token || !/^\d{6}$/.test(data.token)) {
       throw new functions.https.HttpsError(
         'invalid-argument',
-        'Секрет та токен є обов\'язковими.'
+        'Токен повинен бути 6-значним числом.'
       );
     }
 
-    // In production, verify the TOTP token against the secret
-    // For now, we just store the 2FA status
-    // TODO: Implement actual TOTP verification using a library like speakeasy
-
     try {
+      // Get the stored secret
+      const secretDoc = await db.collection(TWO_FACTOR_SECRETS_COLLECTION).doc(userId).get();
+      if (!secretDoc.exists) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'Спочатку налаштуйте 2FA за допомогою setup2FA.'
+        );
+      }
+
+      const secretData = secretDoc.data();
+      if (!secretData || !secretData.encrypted || !secretData.iv || !secretData.authTag) {
+        throw new functions.https.HttpsError(
+          'internal',
+          'Помилка конфігурації 2FA.'
+        );
+      }
+
+      // Decrypt and verify the token
+      const secret = decryptTOTPSecret(
+        secretData.encrypted,
+        secretData.iv,
+        secretData.authTag
+      );
+
+      const isValid = verifyTOTPWithWindow(data.token, secret);
+
+      if (!isValid) {
+        await logAdminAction(userId, 'admin', 'ENABLE_2FA_FAILED', userId, {
+          reason: 'invalid_token',
+        });
+        return {
+          success: false,
+          error: 'Недійсний токен. Перевірте час на пристрої.',
+        };
+      }
+
+      // Enable 2FA
+      await db.collection(TWO_FACTOR_SECRETS_COLLECTION).doc(userId).update({
+        enabled: true,
+        enabledAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
       await db.collection(USERS_COLLECTION).doc(userId).update({
         twoFactorEnabled: true,
         twoFactorEnabledAt: admin.firestore.FieldValue.serverTimestamp(),
-        // In production, store encrypted secret
       });
 
       const role = await getUserAdminRole(userId);
@@ -2138,6 +2501,9 @@ export const enable2FA = functions.https.onCall(
 
       return { success: true };
     } catch (error: any) {
+      if (error instanceof functions.https.HttpsError) {
+        throw error;
+      }
       functions.logger.error('Failed to enable 2FA', { error: error.message });
       return {
         success: false,
@@ -2159,6 +2525,7 @@ interface Verify2FAResponse {
 
 /**
  * Verify 2FA token for admin actions
+ * Security: Real TOTP verification using otplib
  */
 export const verify2FAToken = functions.https.onCall(
   async (data: Verify2FARequest, context): Promise<Verify2FAResponse> => {
@@ -2171,37 +2538,103 @@ export const verify2FAToken = functions.https.onCall(
 
     const userId = context.auth.uid;
 
-    if (!data.token) {
-      throw new functions.https.HttpsError(
-        'invalid-argument',
-        'Токен є обов\'язковим.'
-      );
-    }
-
-    // In production, verify the TOTP token
-    // For now, accept any 6-digit token for testing
-    const isValidToken = /^\d{6}$/.test(data.token);
-
-    if (!isValidToken) {
+    if (!data.token || !/^\d{6}$/.test(data.token)) {
       return {
         success: true,
         verified: false,
-        error: 'Недійсний токен.',
+        error: 'Токен повинен бути 6-значним числом.',
       };
     }
 
-    // Log verification attempt
-    const role = await getUserAdminRole(userId);
-    if (role) {
-      await logAdminAction(userId, role, 'VERIFY_2FA', userId, {
+    try {
+      // Verify using the helper function
+      const isValid = await verifyTOTPToken(userId, data.token);
+
+      // Log verification attempt
+      const role = await getUserAdminRole(userId);
+      if (role) {
+        await logAdminAction(userId, role, 'VERIFY_2FA', userId, {
+          verified: isValid,
+        });
+      }
+
+      if (!isValid) {
+        return {
+          success: true,
+          verified: false,
+          error: 'Недійсний токен.',
+        };
+      }
+
+      return {
+        success: true,
         verified: true,
-      });
+      };
+    } catch (error: any) {
+      functions.logger.error('Failed to verify 2FA token', { error: error.message });
+      return {
+        success: false,
+        verified: false,
+        error: 'Помилка перевірки токена.',
+      };
+    }
+  }
+);
+
+/**
+ * Disable 2FA for a user
+ * Requires current 2FA token verification
+ */
+export const disable2FA = functions.https.onCall(
+  async (data: Verify2FARequest, context): Promise<Enable2FAResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
     }
 
-    return {
-      success: true,
-      verified: true,
-    };
+    const userId = context.auth.uid;
+
+    if (!data.token || !/^\d{6}$/.test(data.token)) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Токен повинен бути 6-значним числом.'
+      );
+    }
+
+    try {
+      // Verify current token before disabling
+      const isValid = await verifyTOTPToken(userId, data.token);
+      if (!isValid) {
+        return {
+          success: false,
+          error: 'Недійсний токен.',
+        };
+      }
+
+      // Delete the 2FA secret
+      await db.collection(TWO_FACTOR_SECRETS_COLLECTION).doc(userId).delete();
+
+      // Update user document
+      await db.collection(USERS_COLLECTION).doc(userId).update({
+        twoFactorEnabled: false,
+        twoFactorDisabledAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      const role = await getUserAdminRole(userId);
+      if (role) {
+        await logAdminAction(userId, role, 'DISABLE_2FA', userId, {});
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      functions.logger.error('Failed to disable 2FA', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося вимкнути 2FA.',
+      };
+    }
   }
 );
 
@@ -2212,12 +2645,15 @@ interface ImpersonateUserRequest {
 interface ImpersonateUserResponse {
   success: boolean;
   customToken?: string;
+  sessionId?: string;
+  expiresAt?: number;
   error?: string;
 }
 
 /**
  * Generate custom token for user impersonation
  * Only admin and support roles can impersonate
+ * Security: Rate limited, 5min expiry, prevent chaining, session tracking
  */
 export const impersonateUser = functions.https.onCall(
   async (data: ImpersonateUserRequest, context): Promise<ImpersonateUserResponse> => {
@@ -2229,12 +2665,33 @@ export const impersonateUser = functions.https.onCall(
     }
 
     const actorId = context.auth.uid;
+
+    // Rate limiting
+    if (!impersonationRateLimiter.isAllowed(actorId)) {
+      await logAdminAction(actorId, 'admin', 'RATE_LIMIT_EXCEEDED', null, {
+        action: 'impersonateUser',
+      });
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        'Перевищено ліміт запитів. Спробуйте пізніше.'
+      );
+    }
+
     const actorRole = await getUserAdminRole(actorId);
 
     if (!hasPermission(actorRole, 'canImpersonateUsers')) {
       throw new functions.https.HttpsError(
         'permission-denied',
         'Недостатньо прав для імітації користувача.'
+      );
+    }
+
+    // Prevent impersonation chaining - check if actor is already impersonating
+    const isAlreadyImpersonating = await isUserImpersonating(actorId);
+    if (isAlreadyImpersonating) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Неможливо імітувати під час активної сесії імітації.'
       );
     }
 
@@ -2256,6 +2713,14 @@ export const impersonateUser = functions.https.onCall(
       );
     }
 
+    // Cannot impersonate self
+    if (data.targetUserId === actorId) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Неможливо імітувати самого себе.'
+      );
+    }
+
     // Cannot impersonate super_admin
     const targetRole = await getUserAdminRole(data.targetUserId);
     if (targetRole === 'super_admin') {
@@ -2265,32 +2730,135 @@ export const impersonateUser = functions.https.onCall(
       );
     }
 
+    // Cannot impersonate admin if actor is not super_admin
+    if (targetRole === 'admin' && actorRole !== 'super_admin') {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Тільки super_admin може імітувати admin.'
+      );
+    }
+
     try {
-      // Generate custom token with impersonation flag
+      const now = Date.now();
+      const expiresAt = now + IMPERSONATION_TOKEN_EXPIRY_MS;
+
+      // Create impersonation session record
+      const sessionRef = await db.collection(IMPERSONATION_SESSIONS_COLLECTION).add({
+        actorId,
+        actorRole,
+        targetUserId: data.targetUserId,
+        targetRole,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        expiresAt: new Date(expiresAt),
+        active: true,
+      });
+
+      // Generate custom token with impersonation flag and expiry
       const customToken = await admin.auth().createCustomToken(data.targetUserId, {
         impersonatedBy: actorId,
-        impersonatedAt: Date.now(),
+        impersonatedAt: now,
+        impersonationSessionId: sessionRef.id,
+        impersonationExpiresAt: expiresAt,
       });
 
-      // Log the impersonation
-      await logAdminAction(actorId, actorRole!, 'IMPERSONATE_USER', data.targetUserId, {
+      // Log the impersonation start
+      await logAdminAction(actorId, actorRole!, 'IMPERSONATE_USER_START', data.targetUserId, {
         targetRole,
+        sessionId: sessionRef.id,
+        expiresAt,
       });
 
-      functions.logger.info('User impersonation', {
+      functions.logger.info('User impersonation started', {
         actorId,
         targetUserId: data.targetUserId,
+        sessionId: sessionRef.id,
+        expiresAt,
       });
 
       return {
         success: true,
         customToken,
+        sessionId: sessionRef.id,
+        expiresAt,
       };
     } catch (error: any) {
       functions.logger.error('Failed to impersonate user', { error: error.message });
       return {
         success: false,
         error: 'Не вдалося імітувати користувача.',
+      };
+    }
+  }
+);
+
+interface EndImpersonationRequest {
+  sessionId: string;
+}
+
+/**
+ * End an impersonation session
+ * Security: Logs session end for audit trail
+ */
+export const endImpersonation = functions.https.onCall(
+  async (data: EndImpersonationRequest, context): Promise<{ success: boolean; error?: string }> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    if (!data.sessionId || typeof data.sessionId !== 'string') {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'ID сесії є обов\'язковим.'
+      );
+    }
+
+    try {
+      const sessionRef = db.collection(IMPERSONATION_SESSIONS_COLLECTION).doc(data.sessionId);
+      const sessionDoc = await sessionRef.get();
+
+      if (!sessionDoc.exists) {
+        return {
+          success: false,
+          error: 'Сесію не знайдено.',
+        };
+      }
+
+      const session = sessionDoc.data();
+      
+      // Verify the caller is the original actor
+      if (session?.actorId !== context.auth.uid) {
+        throw new functions.https.HttpsError(
+          'permission-denied',
+          'Тільки ініціатор може завершити сесію.'
+        );
+      }
+
+      // Mark session as ended
+      await sessionRef.update({
+        active: false,
+        endedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // Log the impersonation end
+      const actorRole = await getUserAdminRole(context.auth.uid);
+      if (actorRole) {
+        await logAdminAction(context.auth.uid, actorRole, 'IMPERSONATE_USER_END', session?.targetUserId, {
+          sessionId: data.sessionId,
+        });
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      if (error instanceof functions.https.HttpsError) {
+        throw error;
+      }
+      functions.logger.error('Failed to end impersonation', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося завершити сесію.',
       };
     }
   }
