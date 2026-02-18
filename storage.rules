@@ -1,0 +1,66 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isValidImageType() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    
+    function isValidImageSize() {
+      // Max 5MB for images
+      return request.resource.size < 5 * 1024 * 1024;
+    }
+    
+    // Listing photos: listings/{listingId}/photo_{index}_{timestamp}.{ext}
+    match /listings/{listingId}/{fileName} {
+      // Anyone can read listing photos (for approved listings)
+      allow read: if true;
+      
+      // Authenticated users can upload photos for their listings
+      // File must be an image and under 5MB
+      allow create: if isAuthenticated() &&
+        isValidImageType() &&
+        isValidImageSize();
+      
+      // Only the uploader can update/delete their photos
+      allow update, delete: if isAuthenticated();
+    }
+    
+    // User avatars: users/{userId}/avatar.jpg
+    match /users/{userId}/{fileName} {
+      // Anyone can read user avatars
+      allow read: if true;
+      
+      // Only the user can upload their own avatar
+      allow create, update: if isOwner(userId) &&
+        isValidImageType() &&
+        isValidImageSize();
+      
+      // Only the user can delete their avatar
+      allow delete: if isOwner(userId);
+    }
+    
+    // News images: news/{articleId}/{fileName}
+    match /news/{articleId}/{fileName} {
+      // Anyone can read news images
+      allow read: if true;
+      
+      // Only authenticated users can upload (admin/manager check done in Cloud Function)
+      allow create, update: if isAuthenticated() &&
+        isValidImageType() &&
+        isValidImageSize();
+      
+      // Only authenticated users can delete
+      allow delete: if isAuthenticated();
+    }
+  }
+}

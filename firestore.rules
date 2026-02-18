@@ -168,6 +168,23 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
     
+    // Payments collection
+    match /payments/{paymentId} {
+      // Users can read their own payments
+      // Admins can read all payments
+      allow read: if isAdmin() || 
+        (isAuthenticated() && resource.data.userId == request.auth.uid);
+      
+      // Only Cloud Functions can create payments (no direct client writes)
+      allow create: if false;
+      
+      // Only Cloud Functions can update payments
+      allow update: if false;
+      
+      // Only admins can delete payments
+      allow delete: if isAdmin();
+    }
+    
     // News collection
     match /news/{articleId} {
       // Helper function to check if user is admin or manager
