@@ -1,15 +1,24 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   View, 
   Text, 
   StyleSheet, 
   SafeAreaView,
   TouchableOpacity,
-  Alert
+  Alert,
+  Image,
+  ActivityIndicator,
 } from 'react-native';
 import { theme } from '../config/theme';
 import { Button } from '../components';
 import { User } from '../types';
+import { 
+  pickImageFromGallery, 
+  takePhoto, 
+  uploadUserAvatar 
+} from '../services/imageUploadService';
+import { doc, updateDoc } from 'firebase/firestore';
+import { db } from '../config/firebase';
 
 interface ProfileScreenProps {
   user: User | null;
@@ -30,6 +39,63 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   isAdmin,
   navigation 
 }) => {
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(user?.avatarUrl || null);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+
+  const handleAvatarPress = () => {
+    Alert.alert(
+      'Змінити фото',
+      'Виберіть джерело фото',
+      [
+        { text: 'Скасувати', style: 'cancel' },
+        { text: 'Галерея', onPress: handlePickFromGallery },
+        { text: 'Камера', onPress: handleTakePhoto },
+      ]
+    );
+  };
+
+  const handlePickFromGallery = async () => {
+    try {
+      const images = await pickImageFromGallery(false);
+      if (images.length > 0 && user?.uid) {
+        await uploadAvatar(images[0].uri);
+      }
+    } catch (error: any) {
+      Alert.alert('Помилка', error.message || 'Не вдалося вибрати фото');
+    }
+  };
+
+  const handleTakePhoto = async () => {
+    try {
+      const photo = await takePhoto();
+      if (photo && user?.uid) {
+        await uploadAvatar(photo.uri);
+      }
+    } catch (error: any) {
+      Alert.alert('Помилка', error.message || 'Не вдалося зробити фото');
+    }
+  };
+
+  const uploadAvatar = async (uri: string) => {
+    if (!user?.uid) return;
+    
+    setUploadingAvatar(true);
+    try {
+      const result = await uploadUserAvatar(uri, user.uid);
+      setAvatarUrl(result.url);
+      
+      await updateDoc(doc(db, 'users', user.uid), {
+        avatarUrl: result.url,
+      });
+      
+      Alert.alert('Успіх', 'Фото профілю оновлено');
+    } catch (error: any) {
+      Alert.alert('Помилка', error.message || 'Не вдалося завантажити фото');
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
+
   const handleSignOut = () => {
     Alert.alert(
       'Вийти',
@@ -49,11 +115,25 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
       <View style={styles.content}>
         <View style={styles.avatarContainer}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>
-              {user?.displayName?.charAt(0) || user?.phoneNumber?.charAt(1) || user?.email?.charAt(0) || 'U'}
-            </Text>
-          </View>
+          <TouchableOpacity onPress={handleAvatarPress} disabled={uploadingAvatar}>
+            {avatarUrl ? (
+              <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+            ) : (
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>
+                  {user?.displayName?.charAt(0) || user?.phoneNumber?.charAt(1) || user?.email?.charAt(0) || 'U'}
+                </Text>
+              </View>
+            )}
+            {uploadingAvatar && (
+              <View style={styles.avatarLoading}>
+                <ActivityIndicator size="small" color={theme.colors.primary} />
+              </View>
+            )}
+            <View style={styles.avatarEditBadge}>
+              <Text style={styles.avatarEditText}>📷</Text>
+            </View>
+          </TouchableOpacity>
           {user?.role && (
             <View style={styles.roleBadge}>
               <Text style={styles.roleText}>{ROLE_LABELS[user.role] || user.role}</Text>
@@ -152,6 +232,38 @@ const styles = StyleSheet.create({
     color: theme.colors.background,
     fontSize: theme.fontSize.xxl,
     fontWeight: '700',
+  },
+  avatarImage: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+  },
+  avatarLoading: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 50,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: theme.colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: theme.colors.background,
+  },
+  avatarEditText: {
+    fontSize: 14,
   },
   roleBadge: {
     marginTop: theme.spacing.sm,
