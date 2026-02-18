@@ -149,9 +149,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     }, 1000);
   }, []);
 
-  const handlePlotPress = (plot: LandPlot) => {
+  const handlePlotPress = useCallback((plot: LandPlot) => {
     navigation.navigate('PlotDetail', { plot });
-  };
+  }, [navigation]);
 
   const activeFiltersCount = Object.values(filters).filter(v => v !== undefined).length;
 
