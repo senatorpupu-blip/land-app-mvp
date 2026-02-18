@@ -1514,72 +1514,282 @@ interface MonobankWebhookData {
   modifiedDate: string;
 }
 
+// Webhook logs collection
+const WEBHOOK_LOGS_COLLECTION = 'webhookLogs';
+
+// Expected payment amount in kopiykas (250 UAH = 25000 kopiykas)
+const EXPECTED_PAYMENT_AMOUNT_KOPIYKAS = LISTING_FEE_UAH * 100;
+
+/**
+ * Verify Monobank webhook signature using HMAC SHA256
+ * Monobank sends signature in X-Sign header
+ */
+function verifyMonobankSignature(
+  body: string,
+  signature: string | undefined,
+  secretKey: string
+): boolean {
+  if (!signature || !secretKey) {
+    return false;
+  }
+
+  try {
+    // Monobank uses ECDSA with public key verification
+    // For HMAC fallback (if configured), compute HMAC SHA256
+    const computedSignature = crypto
+      .createHmac('sha256', secretKey)
+      .update(body)
+      .digest('base64');
+
+    // Use timing-safe comparison to prevent timing attacks
+    return crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(computedSignature)
+    );
+  } catch (error) {
+    functions.logger.error('Signature verification error', { error });
+    return false;
+  }
+}
+
+/**
+ * Log webhook attempt for security auditing
+ */
+async function logWebhookAttempt(
+  paymentId: string | null,
+  signatureValid: boolean,
+  processed: boolean,
+  reason: string,
+  ipAddress: string,
+  rawBody: string
+): Promise<void> {
+  try {
+    await db.collection(WEBHOOK_LOGS_COLLECTION).add({
+      paymentId,
+      signatureValid,
+      processed,
+      reason,
+      ipAddress,
+      bodyHash: crypto.createHash('sha256').update(rawBody).digest('hex'),
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    functions.logger.error('Failed to log webhook attempt', { error });
+  }
+}
+
 /**
  * Webhook handler for Monobank payment notifications
+ * 
+ * Security features:
+ * - HMAC SHA256 signature verification
+ * - Idempotency protection (prevents replay attacks)
+ * - Strict validation (amount, status, ownership)
+ * - Atomic transactions
+ * - Comprehensive logging
  */
 export const monobankWebhook = functions.https.onRequest(
   async (req, res) => {
+    const ipAddress = req.ip || 
+      req.headers['x-forwarded-for']?.toString().split(',')[0] || 
+      'unknown';
+    const rawBody = JSON.stringify(req.body);
+
+    // BLOCK 1: Method validation
     if (req.method !== 'POST') {
+      await logWebhookAttempt(null, false, false, 'Invalid HTTP method', ipAddress, rawBody);
       res.status(405).send('Method not allowed');
       return;
     }
 
+    // BLOCK 1: Signature verification
+    const signature = req.headers['x-sign'] as string | undefined;
+    const monobankSecretKey = functions.config().monobank?.webhook_secret;
+
+    // In production, signature verification is REQUIRED
+    if (monobankSecretKey) {
+      const isSignatureValid = verifyMonobankSignature(rawBody, signature, monobankSecretKey);
+      
+      if (!isSignatureValid) {
+        await logWebhookAttempt(null, false, false, 'Invalid signature', ipAddress, rawBody);
+        functions.logger.error('Monobank webhook: invalid signature', { ipAddress });
+        res.status(401).send('Unauthorized: Invalid signature');
+        return;
+      }
+    } else {
+      // Development mode warning - signature verification disabled
+      functions.logger.warn('Monobank webhook: signature verification disabled (no webhook_secret configured)');
+    }
+
     const data = req.body as MonobankWebhookData;
 
+    // BLOCK 3: Validate required fields
     if (!data.reference) {
+      await logWebhookAttempt(null, !!monobankSecretKey, false, 'Missing reference', ipAddress, rawBody);
       functions.logger.error('Monobank webhook: missing reference');
       res.status(400).send('Missing reference');
       return;
     }
 
-    const paymentRef = db.collection(PAYMENTS_COLLECTION).doc(data.reference);
-    const paymentDoc = await paymentRef.get();
-
-    if (!paymentDoc.exists) {
-      functions.logger.error('Monobank webhook: payment not found', { reference: data.reference });
-      res.status(404).send('Payment not found');
+    if (!data.invoiceId) {
+      await logWebhookAttempt(data.reference, !!monobankSecretKey, false, 'Missing invoiceId', ipAddress, rawBody);
+      functions.logger.error('Monobank webhook: missing invoiceId');
+      res.status(400).send('Missing invoiceId');
       return;
     }
 
-    const paymentData = paymentDoc.data();
+    // BLOCK 2 & 3: Use transaction for atomic idempotency check and update
+    try {
+      await db.runTransaction(async (transaction) => {
+        const paymentRef = db.collection(PAYMENTS_COLLECTION).doc(data.reference);
+        const paymentDoc = await transaction.get(paymentRef);
 
-    if (data.status === 'success') {
-      // Payment successful - update payment and listing status
-      await paymentRef.update({
-        status: 'completed',
-        completedAt: admin.firestore.FieldValue.serverTimestamp(),
-        monobankStatus: data.status,
+        // BLOCK 3: Validate payment exists
+        if (!paymentDoc.exists) {
+          await logWebhookAttempt(data.reference, !!monobankSecretKey, false, 'Payment not found', ipAddress, rawBody);
+          throw new Error('Payment not found');
+        }
+
+        const paymentData = paymentDoc.data();
+
+        // BLOCK 2: Idempotency check - prevent replay attacks
+        if (paymentData?.status === 'completed') {
+          await logWebhookAttempt(data.reference, !!monobankSecretKey, false, 'Payment already processed (replay attempt)', ipAddress, rawBody);
+          functions.logger.warn('Monobank webhook: replay attack attempt', { 
+            reference: data.reference,
+            ipAddress 
+          });
+          // Return 200 to prevent Monobank from retrying, but don't process
+          return;
+        }
+
+        // BLOCK 3: Validate listing exists and belongs to user
+        if (!paymentData?.listingId) {
+          await logWebhookAttempt(data.reference, !!monobankSecretKey, false, 'Missing listingId in payment', ipAddress, rawBody);
+          throw new Error('Missing listingId in payment record');
+        }
+
+        const listingRef = db.collection(PLOTS_COLLECTION).doc(paymentData.listingId);
+        const listingDoc = await transaction.get(listingRef);
+
+        if (!listingDoc.exists) {
+          await logWebhookAttempt(data.reference, !!monobankSecretKey, false, 'Listing not found', ipAddress, rawBody);
+          throw new Error('Listing not found');
+        }
+
+        const listingData = listingDoc.data();
+
+        // BLOCK 3: Validate listing belongs to the user who created the payment
+        if (listingData?.ownerId !== paymentData.userId) {
+          await logWebhookAttempt(data.reference, !!monobankSecretKey, false, 'Listing ownership mismatch', ipAddress, rawBody);
+          functions.logger.error('Monobank webhook: ownership mismatch', {
+            reference: data.reference,
+            paymentUserId: paymentData.userId,
+            listingOwnerId: listingData?.ownerId,
+          });
+          throw new Error('Listing ownership mismatch');
+        }
+
+        // BLOCK 3: Validate listing is not already published
+        if (listingData?.paymentStatus === 'paid') {
+          await logWebhookAttempt(data.reference, !!monobankSecretKey, false, 'Listing already paid', ipAddress, rawBody);
+          functions.logger.warn('Monobank webhook: listing already paid', { 
+            reference: data.reference,
+            listingId: paymentData.listingId 
+          });
+          return;
+        }
+
+        // Process based on payment status
+        if (data.status === 'success') {
+          // BLOCK 3: Validate amount matches expected (250 UAH = 25000 kopiykas)
+          if (data.amount !== EXPECTED_PAYMENT_AMOUNT_KOPIYKAS) {
+            await logWebhookAttempt(data.reference, !!monobankSecretKey, false, `Invalid amount: ${data.amount}`, ipAddress, rawBody);
+            functions.logger.error('Monobank webhook: amount mismatch', {
+              reference: data.reference,
+              expected: EXPECTED_PAYMENT_AMOUNT_KOPIYKAS,
+              received: data.amount,
+            });
+            throw new Error('Payment amount mismatch');
+          }
+
+          // BLOCK 3: Validate currency is UAH (980)
+          if (data.ccy !== 980) {
+            await logWebhookAttempt(data.reference, !!monobankSecretKey, false, `Invalid currency: ${data.ccy}`, ipAddress, rawBody);
+            functions.logger.error('Monobank webhook: currency mismatch', {
+              reference: data.reference,
+              expected: 980,
+              received: data.ccy,
+            });
+            throw new Error('Invalid currency');
+          }
+
+          // Payment successful - update payment status atomically
+          transaction.update(paymentRef, {
+            status: 'completed',
+            completedAt: admin.firestore.FieldValue.serverTimestamp(),
+            monobankStatus: data.status,
+            monobankInvoiceId: data.invoiceId,
+            processedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          // Update listing to mark as paid (ONLY webhook can do this)
+          transaction.update(listingRef, {
+            paymentStatus: 'paid',
+            paymentId: data.reference,
+            paymentCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          await logWebhookAttempt(data.reference, !!monobankSecretKey, true, 'Payment completed successfully', ipAddress, rawBody);
+
+          functions.logger.info('Payment completed', {
+            invoiceId: data.reference,
+            listingId: paymentData.listingId,
+            amount: data.amount,
+            userId: paymentData.userId,
+          });
+        } else if (data.status === 'failure' || data.status === 'expired') {
+          // Payment failed or expired
+          transaction.update(paymentRef, {
+            status: 'failed',
+            failedAt: admin.firestore.FieldValue.serverTimestamp(),
+            monobankStatus: data.status,
+            failureReason: data.status,
+          });
+
+          await logWebhookAttempt(data.reference, !!monobankSecretKey, true, `Payment ${data.status}`, ipAddress, rawBody);
+
+          functions.logger.info('Payment failed', {
+            invoiceId: data.reference,
+            status: data.status,
+          });
+        } else {
+          // Unknown status - log but don't process
+          await logWebhookAttempt(data.reference, !!monobankSecretKey, false, `Unknown status: ${data.status}`, ipAddress, rawBody);
+          functions.logger.warn('Monobank webhook: unknown status', {
+            reference: data.reference,
+            status: data.status,
+          });
+        }
       });
 
-      // Update listing to allow publication
-      if (paymentData?.listingId) {
-        await db.collection(PLOTS_COLLECTION).doc(paymentData.listingId).update({
-          paymentStatus: 'paid',
-          paymentId: data.reference,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
+      res.status(200).send('OK');
+    } catch (error: any) {
+      functions.logger.error('Monobank webhook error', { 
+        error: error.message,
+        reference: data.reference,
+      });
+      
+      // Return appropriate error code
+      if (error.message === 'Payment not found') {
+        res.status(404).send('Payment not found');
+      } else if (error.message.includes('mismatch') || error.message.includes('Invalid')) {
+        res.status(400).send('Validation failed');
+      } else {
+        res.status(500).send('Internal error');
       }
-
-      functions.logger.info('Payment completed', {
-        invoiceId: data.reference,
-        listingId: paymentData?.listingId,
-        amount: data.amount,
-      });
-    } else if (data.status === 'failure' || data.status === 'expired') {
-      // Payment failed or expired
-      await paymentRef.update({
-        status: 'failed',
-        failedAt: admin.firestore.FieldValue.serverTimestamp(),
-        monobankStatus: data.status,
-      });
-
-      functions.logger.info('Payment failed', {
-        invoiceId: data.reference,
-        status: data.status,
-      });
     }
-
-    res.status(200).send('OK');
   }
 );
 

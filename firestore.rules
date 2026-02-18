@@ -60,6 +60,7 @@ service cloud.firestore {
     
     // Plots collection
     // NOTE: Direct create is DISABLED - use createLandPlot Cloud Function instead
+    // NOTE: paymentStatus can ONLY be updated by Cloud Functions (webhook)
     match /plots/{plotId} {
       // Buyers can read approved plots
       // Sellers can read their own plots (any status)
@@ -71,14 +72,23 @@ service cloud.firestore {
       // Direct create is DISABLED - must use createLandPlot Cloud Function
       allow create: if false;
       
-      // Owners can update their own plots (except status field)
+      // Owners can update their own plots (except status, paymentStatus, paymentId fields)
       // Admins can update any plot including status
+      // SECURITY: paymentStatus and paymentId can ONLY be set by Cloud Functions (webhook)
+      // This prevents payment fraud via direct client writes
       allow update: if isAdmin() ||
         (isAuthenticated() && 
          isNotBlocked() &&
          resource.data.ownerId == request.auth.uid &&
          request.resource.data.status == resource.data.status &&
-         request.resource.data.ownerId == resource.data.ownerId);
+         request.resource.data.ownerId == resource.data.ownerId &&
+         // BLOCK 5: Prevent client from setting payment fields
+         (!('paymentStatus' in request.resource.data) || 
+          request.resource.data.paymentStatus == resource.data.paymentStatus) &&
+         (!('paymentId' in request.resource.data) || 
+          request.resource.data.paymentId == resource.data.paymentId) &&
+         (!('paymentCompletedAt' in request.resource.data) || 
+          request.resource.data.paymentCompletedAt == resource.data.paymentCompletedAt));
       
       // Only owners can soft-delete their own plots, or admins
       // Soft delete: set status="deleted"
@@ -255,6 +265,14 @@ service cloud.firestore {
     // Only Cloud Functions can write
     match /loginLogs/{logId} {
       allow read: if isSuperAdmin() || isSupport();
+      allow create, update, delete: if false;
+    }
+    
+    // Webhook Logs collection (Payment Security Audit)
+    // Only super_admin and finance can read webhook logs
+    // Only Cloud Functions can write (monobankWebhook)
+    match /webhookLogs/{logId} {
+      allow read: if isSuperAdmin() || isFinance();
       allow create, update, delete: if false;
     }
   }
