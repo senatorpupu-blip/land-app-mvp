@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, 
   Text, 
@@ -9,21 +9,26 @@ import {
   TouchableOpacity,
   ScrollView,
 } from 'react-native';
+import { RecaptchaVerifier, ApplicationVerifier } from 'firebase/auth';
 import { theme } from '../config/theme';
 import { Input, Button } from '../components';
+import { 
+  initRecaptchaVerifier, 
+  sendPhoneVerificationCode, 
+  verifyPhoneCode,
+  clearPhoneAuthState 
+} from '../services/auth';
 
 type AuthMode = 'phone' | 'email-signin' | 'email-signup';
 type PhoneStep = 'phone' | 'otp';
 
 interface LoginScreenProps {
-  onPhoneLogin: (phoneNumber: string, otp: string) => Promise<void>;
   onEmailSignIn: (email: string, password: string) => Promise<void>;
   onEmailSignUp: (email: string, password: string) => Promise<void>;
   onResetPassword: (email: string) => Promise<void>;
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ 
-  onPhoneLogin, 
   onEmailSignIn, 
   onEmailSignUp,
   onResetPassword,
@@ -32,7 +37,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [phoneStep, setPhoneStep] = useState<PhoneStep>('phone');
   
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [otp, setOtp] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -40,19 +45,38 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  
+  // reCAPTCHA verifier reference
+  const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
+
+  // Initialize reCAPTCHA on web platform
+  useEffect(() => {
+    if (Platform.OS === 'web') {
+      // reCAPTCHA will be initialized when needed
+    }
+    
+    return () => {
+      // Cleanup reCAPTCHA verifier
+      if (recaptchaVerifierRef.current) {
+        recaptchaVerifierRef.current.clear();
+        recaptchaVerifierRef.current = null;
+      }
+    };
+  }, []);
 
   const resetForm = () => {
     setPhoneNumber('');
-    setOtp('');
+    setVerificationCode('');
     setEmail('');
     setPassword('');
     setConfirmPassword('');
     setError('');
     setSuccessMessage('');
     setPhoneStep('phone');
+    clearPhoneAuthState();
   };
 
-  const handleSendOTP = async () => {
+  const handleSendVerificationCode = async () => {
     if (!phoneNumber || phoneNumber.length < 10) {
       setError('Введіть коректний номер телефону');
       return;
@@ -62,17 +86,34 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setError('');
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Initialize reCAPTCHA verifier if on web
+      if (Platform.OS === 'web' && !recaptchaVerifierRef.current) {
+        recaptchaVerifierRef.current = initRecaptchaVerifier('recaptcha-container');
+      }
+      
+      // Send verification code via Firebase Phone Auth
+      const verifier = recaptchaVerifierRef.current;
+      if (!verifier && Platform.OS === 'web') {
+        throw new Error('Помилка ініціалізації reCAPTCHA');
+      }
+      
+      await sendPhoneVerificationCode(phoneNumber, verifier as ApplicationVerifier);
       setPhoneStep('otp');
-    } catch (err) {
-      setError('Не вдалося надіслати OTP. Спробуйте ще раз.');
+      setSuccessMessage('Код підтвердження надіслано на ваш телефон');
+    } catch (err: any) {
+      setError(err.message || 'Не вдалося надіслати код. Спробуйте ще раз.');
+      // Reset reCAPTCHA on error
+      if (recaptchaVerifierRef.current) {
+        recaptchaVerifierRef.current.clear();
+        recaptchaVerifierRef.current = null;
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const handleVerifyOTP = async () => {
-    if (!otp || otp.length !== 6) {
+  const handleVerifyCode = async () => {
+    if (!verificationCode || verificationCode.length !== 6) {
       setError('Введіть 6-значний код');
       return;
     }
@@ -81,9 +122,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setError('');
 
     try {
-      await onPhoneLogin(phoneNumber, otp);
+      // Verify the code using Firebase Phone Auth
+      // This will automatically sign in the user and trigger onAuthStateChanged
+      await verifyPhoneCode(verificationCode);
+      // Auth state change will be handled by AuthContext
     } catch (err: any) {
-      setError(err.message || 'Невірний OTP. Спробуйте ще раз.');
+      setError(err.message || 'Невірний код. Спробуйте ще раз.');
     } finally {
       setLoading(false);
     }
@@ -178,38 +222,49 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             error={error}
             autoFocus
           />
+          {successMessage ? (
+            <Text style={styles.successMessage}>{successMessage}</Text>
+          ) : null}
           <Button
             title="Надіслати код"
-            onPress={handleSendOTP}
+            onPress={handleSendVerificationCode}
             loading={loading}
             disabled={!phoneNumber}
           />
+          {Platform.OS === 'web' && (
+            <View nativeID="recaptcha-container" />
+          )}
         </>
       ) : (
         <>
           <Input
             label="Код підтвердження"
-            placeholder="Введіть 6-значний код"
+            placeholder="Введіть 6-значний код з SMS"
             keyboardType="number-pad"
             maxLength={6}
-            value={otp}
-            onChangeText={setOtp}
+            value={verificationCode}
+            onChangeText={setVerificationCode}
             error={error}
             autoFocus
           />
+          {successMessage ? (
+            <Text style={styles.successMessage}>{successMessage}</Text>
+          ) : null}
           <Button
             title="Підтвердити"
-            onPress={handleVerifyOTP}
+            onPress={handleVerifyCode}
             loading={loading}
-            disabled={otp.length !== 6}
+            disabled={verificationCode.length !== 6}
           />
           <Button
             title="Змінити номер"
             variant="outline"
             onPress={() => {
               setPhoneStep('phone');
-              setOtp('');
+              setVerificationCode('');
               setError('');
+              setSuccessMessage('');
+              clearPhoneAuthState();
             }}
             style={styles.secondaryButton}
           />
@@ -348,9 +403,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             </View>
           )}
 
-          <Text style={styles.demoNote}>
-            Демо: телефон - будь-який номер + OTP "123456"
-          </Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -438,11 +490,5 @@ const styles = StyleSheet.create({
   switchAuthLink: {
     color: theme.colors.primary,
     fontWeight: '600',
-  },
-  demoNote: {
-    color: theme.colors.textMuted,
-    fontSize: theme.fontSize.sm,
-    textAlign: 'center',
-    marginTop: theme.spacing.xl,
   },
 });

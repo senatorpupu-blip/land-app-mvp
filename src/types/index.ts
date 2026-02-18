@@ -113,11 +113,13 @@ export interface User {
   phoneNumber?: string;
   email?: string;
   displayName?: string;
+  avatarUrl?: string;
   role: UserRole;
   isBlocked?: boolean;
   isSoftBanned?: boolean;
   softBanReason?: string;
   softBannedAt?: Date;
+  lastLoginAt?: Date;
   createdAt: Date;
   updatedAt?: Date;
 }

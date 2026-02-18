@@ -57,7 +57,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const handlePickFromGallery = async () => {
     try {
       const images = await pickImageFromGallery(false);
-      if (images.length > 0 && user?.uid) {
+      if (images.length > 0 && user?.id) {
         await uploadAvatar(images[0].uri);
       }
     } catch (error: any) {
@@ -68,7 +68,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const handleTakePhoto = async () => {
     try {
       const photo = await takePhoto();
-      if (photo && user?.uid) {
+      if (photo && user?.id) {
         await uploadAvatar(photo.uri);
       }
     } catch (error: any) {
@@ -77,14 +77,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   };
 
   const uploadAvatar = async (uri: string) => {
-    if (!user?.uid) return;
+    if (!user?.id) return;
     
     setUploadingAvatar(true);
     try {
-      const result = await uploadUserAvatar(uri, user.uid);
+      const result = await uploadUserAvatar(uri, user.id);
       setAvatarUrl(result.url);
       
-      await updateDoc(doc(db, 'users', user.uid), {
+      await updateDoc(doc(db, 'users', user.id), {
         avatarUrl: result.url,
       });
       

@@ -50,7 +50,7 @@ export const ProfileCompletionScreen: React.FC<ProfileCompletionScreenProps> = (
   const [loading, setLoading] = useState(false);
 
   const handleSave = async () => {
-    if (!user?.uid) {
+    if (!user?.id) {
       Alert.alert('Помилка', 'Ви повинні увійти в систему');
       return;
     }
@@ -68,7 +68,7 @@ export const ProfileCompletionScreen: React.FC<ProfileCompletionScreenProps> = (
       if (userType) updates.userType = userType;
       if (bio.trim()) updates.bio = bio.trim();
 
-      await updateDoc(doc(db, 'users', user.uid), updates);
+      await updateDoc(doc(db, 'users', user.id), updates);
 
       Alert.alert('Успіх', 'Профіль оновлено', [
         {

@@ -1634,6 +1634,103 @@ export const checkPaymentStatus = functions.https.onCall(
 );
 
 // ============================================
+// LOGIN LOGGING SYSTEM
+// ============================================
+
+const LOGIN_LOGS_COLLECTION = 'loginLogs';
+
+interface LogLoginEventResponse {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Log login event after successful Firebase Phone Auth
+ * Stores login metadata for security auditing
+ */
+export const logLoginEvent = functions.https.onCall(
+  async (_data: unknown, context): Promise<LogLoginEventResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const userId = context.auth.uid;
+    const rawRequest = context.rawRequest;
+
+    try {
+      // Extract request metadata
+      const ipAddress = rawRequest.ip || 
+        rawRequest.headers['x-forwarded-for']?.toString().split(',')[0] || 
+        'unknown';
+      const userAgent = rawRequest.headers['user-agent'] || 'unknown';
+      
+      // Parse device info from user agent
+      const device = parseDeviceFromUserAgent(userAgent);
+      
+      // Create login log entry
+      const loginLogData = {
+        userId,
+        ipAddress,
+        userAgent,
+        device,
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        authMethod: 'phone', // Firebase Phone Auth
+      };
+
+      await db.collection(LOGIN_LOGS_COLLECTION).add(loginLogData);
+
+      // Update user's lastLoginAt
+      await db.collection(USERS_COLLECTION).doc(userId).update({
+        lastLoginAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      functions.logger.info('Login event logged', {
+        userId,
+        ipAddress,
+        device,
+      });
+
+      return { success: true };
+    } catch (error: any) {
+      functions.logger.error('Failed to log login event', { error: error.message, userId });
+      // Don't throw - login logging failure shouldn't block auth
+      return {
+        success: false,
+        error: 'Не вдалося записати подію входу.',
+      };
+    }
+  }
+);
+
+/**
+ * Parse device type from user agent string
+ */
+function parseDeviceFromUserAgent(userAgent: string): string {
+  const ua = userAgent.toLowerCase();
+  
+  if (ua.includes('iphone') || ua.includes('ipad')) {
+    return 'iOS';
+  }
+  if (ua.includes('android')) {
+    return 'Android';
+  }
+  if (ua.includes('windows')) {
+    return 'Windows';
+  }
+  if (ua.includes('macintosh') || ua.includes('mac os')) {
+    return 'macOS';
+  }
+  if (ua.includes('linux')) {
+    return 'Linux';
+  }
+  
+  return 'Unknown';
+}
+
+// ============================================
 // ENTERPRISE RBAC ADMIN SYSTEM
 // Security Hardened Implementation
 // ============================================

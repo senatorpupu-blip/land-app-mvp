@@ -128,7 +128,7 @@ export const generateBackupId = (): string => {
 
 // Create backup metadata
 export const createBackupMetadata = (
-  collections: string[] = BACKUP_CONFIG.COLLECTIONS_TO_BACKUP
+  collections: string[] = [...BACKUP_CONFIG.COLLECTIONS_TO_BACKUP]
 ): BackupMetadata => {
   return {
     id: generateBackupId(),
@@ -210,8 +210,9 @@ export const validateRecoveryOptions = (
   }
 
   if (options.collections) {
+    const validCollections = BACKUP_CONFIG.COLLECTIONS_TO_BACKUP as readonly string[];
     const invalidCollections = options.collections.filter(
-      c => !BACKUP_CONFIG.COLLECTIONS_TO_BACKUP.includes(c)
+      c => !validCollections.includes(c)
     );
     if (invalidCollections.length > 0) {
       errors.push(`Invalid collections: ${invalidCollections.join(', ')}`);

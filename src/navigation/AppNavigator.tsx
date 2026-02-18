@@ -229,11 +229,7 @@ const MainTabs: React.FC = () => {
 };
 
 const AuthStack: React.FC = () => {
-  const { confirmOTP, signInEmail, signUpEmail, resetPasswordEmail } = useAuth();
-
-  const handlePhoneLogin = async (phoneNumber: string, otp: string) => {
-    await confirmOTP(phoneNumber, otp);
-  };
+  const { signInEmail, signUpEmail, resetPasswordEmail } = useAuth();
 
   const handleEmailSignIn = async (email: string, password: string) => {
     await signInEmail(email, password);
@@ -252,7 +248,6 @@ const AuthStack: React.FC = () => {
       <Stack.Screen name="Login">
         {() => (
           <LoginScreen 
-            onPhoneLogin={handlePhoneLogin}
             onEmailSignIn={handleEmailSignIn}
             onEmailSignUp={handleEmailSignUp}
             onResetPassword={handleResetPassword}
