@@ -35,6 +35,13 @@ export interface BoundingBox {
   west: number;
 }
 
+export interface MapServiceFilters {
+  zone?: string;
+  region?: string;
+  minPrice?: number;
+  maxPrice?: number;
+}
+
 export interface MapServiceState {
   plots: LandPlot[];
   isLoading: boolean;
@@ -42,6 +49,7 @@ export interface MapServiceState {
   error: string | null;
   hasMore: boolean;
   lastDoc: QueryDocumentSnapshot<DocumentData> | null;
+  filters: MapServiceFilters;
 }
 
 export interface MapServiceCallbacks {
@@ -135,6 +143,7 @@ export class MapService {
       error: null,
       hasMore: true,
       lastDoc: null,
+      filters: {},
     };
   }
 
@@ -161,15 +170,58 @@ export class MapService {
   private buildQuery(boundingBox?: BoundingBox): QueryConstraint[] {
     const constraints: QueryConstraint[] = [
       where('status', '==', 'approved'),
-      orderBy('createdAt', 'desc'),
-      limit(DEFAULT_PAGE_SIZE),
     ];
+
+    // Add server-side filters for zone and region (Firestore AND filtering)
+    if (this.state.filters.zone) {
+      constraints.push(where('zone', '==', this.state.filters.zone));
+    }
+    if (this.state.filters.region) {
+      constraints.push(where('region', '==', this.state.filters.region));
+    }
+
+    // Add ordering and pagination
+    constraints.push(orderBy('createdAt', 'desc'));
+    constraints.push(limit(DEFAULT_PAGE_SIZE));
 
     if (this.state.lastDoc) {
       constraints.push(startAfter(this.state.lastDoc));
     }
 
     return constraints;
+  }
+
+  // Apply client-side price filtering (Firestore doesn't support range queries with other filters efficiently)
+  private applyPriceFilter(plots: LandPlot[]): LandPlot[] {
+    const { minPrice, maxPrice } = this.state.filters;
+    
+    return plots.filter(plot => {
+      if (minPrice !== undefined && plot.totalPrice < minPrice) {
+        return false;
+      }
+      if (maxPrice !== undefined && plot.totalPrice > maxPrice) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  setFilters(filters: MapServiceFilters): void {
+    const filtersChanged = JSON.stringify(this.state.filters) !== JSON.stringify(filters);
+    
+    if (filtersChanged) {
+      this.updateState({ 
+        filters, 
+        lastDoc: null, // Reset pagination when filters change
+        plots: [],
+      });
+      // Re-subscribe with new filters
+      this.subscribeToPlots(this.currentBoundingBox || undefined);
+    }
+  }
+
+  resetFilters(): void {
+    this.setFilters({});
   }
 
   private filterByBoundingBox(plots: LandPlot[], boundingBox: BoundingBox): LandPlot[] {
@@ -222,6 +274,9 @@ export class MapService {
           if (boundingBox) {
             loadedPlots = this.filterByBoundingBox(loadedPlots, boundingBox);
           }
+
+          // Apply client-side price filtering
+          loadedPlots = this.applyPriceFilter(loadedPlots);
 
           this.cachedPlots = loadedPlots;
           
@@ -301,6 +356,9 @@ export class MapService {
       if (this.currentBoundingBox) {
         newPlots = this.filterByBoundingBox(newPlots, this.currentBoundingBox);
       }
+
+      // Apply client-side price filtering
+      newPlots = this.applyPriceFilter(newPlots);
 
       const allPlots = removeDuplicatePlots([...this.state.plots, ...newPlots]);
       const lastDoc = snapshot.docs[snapshot.docs.length - 1] || null;
@@ -403,7 +461,8 @@ export const extractUniqueRegions = (plots: LandPlot[]): string[] => {
 export const getRequiredIndexes = (): string[] => {
   return [
     'Collection: plots - Fields: status (Ascending), createdAt (Descending)',
+    'Collection: plots - Fields: status (Ascending), zone (Ascending), createdAt (Descending)',
     'Collection: plots - Fields: status (Ascending), region (Ascending), createdAt (Descending)',
-    'Collection: plots - Fields: status (Ascending), totalPrice (Ascending), createdAt (Descending)',
+    'Collection: plots - Fields: status (Ascending), zone (Ascending), region (Ascending), createdAt (Descending)',
   ];
 };
