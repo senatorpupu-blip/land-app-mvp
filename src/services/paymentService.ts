@@ -18,6 +18,10 @@ export const PREMIUM_PRICING: PremiumPricing = {
   promotion30Days: 249,
 };
 
+// Free listings configuration
+export const FREE_LISTINGS_LIMIT = 2;
+export const LISTING_FEE_UAH = 250;
+
 export interface CreatePaymentRequest {
   plotId: string;
   type: 'premium' | 'promotion';
@@ -212,6 +216,73 @@ export interface PremiumPackage {
   label: string;
   description: string;
 }
+
+/**
+ * Free listings logic - 2 free, 3rd+ requires payment
+ */
+export interface ListingPaymentStatus {
+  requiresPayment: boolean;
+  freeListingsUsed: number;
+  freeListingsRemaining: number;
+  listingFee: number;
+}
+
+export const getListingPaymentStatus = (userListingCount: number): ListingPaymentStatus => {
+  const freeListingsUsed = Math.min(userListingCount, FREE_LISTINGS_LIMIT);
+  const freeListingsRemaining = Math.max(0, FREE_LISTINGS_LIMIT - userListingCount);
+  const requiresPayment = userListingCount >= FREE_LISTINGS_LIMIT;
+  
+  return {
+    requiresPayment,
+    freeListingsUsed,
+    freeListingsRemaining,
+    listingFee: requiresPayment ? LISTING_FEE_UAH : 0,
+  };
+};
+
+export const getListingFeeText = (userListingCount: number): string => {
+  const status = getListingPaymentStatus(userListingCount);
+  
+  if (!status.requiresPayment) {
+    if (status.freeListingsRemaining === 1) {
+      return 'Це ваше останнє безкоштовне оголошення';
+    }
+    return `Безкоштовно (залишилось ${status.freeListingsRemaining} безкоштовних)`;
+  }
+  
+  return `${LISTING_FEE_UAH} ₴ за публікацію`;
+};
+
+export interface CreateListingPaymentRequest {
+  userId: string;
+  listingId: string;
+}
+
+export interface CreateListingPaymentResponse {
+  success: boolean;
+  paymentUrl?: string;
+  invoiceId?: string;
+  error?: string;
+}
+
+export const createListingPayment = async (
+  request: CreateListingPaymentRequest
+): Promise<CreateListingPaymentResponse> => {
+  try {
+    const createPayment = httpsCallable<CreateListingPaymentRequest, CreateListingPaymentResponse>(
+      functions,
+      'createListingPayment'
+    );
+    
+    const result = await createPayment(request);
+    return result.data;
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || 'Не вдалося створити платіж',
+    };
+  }
+};
 
 export const PREMIUM_PACKAGES: PremiumPackage[] = [
   {
