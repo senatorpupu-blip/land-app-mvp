@@ -9,6 +9,8 @@ import {
   Platform,
   TouchableOpacity,
   Alert,
+  Image,
+  ActivityIndicator,
 } from 'react-native';
 import { theme } from '../config/theme';
 import { Input, Button } from '../components';
@@ -17,6 +19,14 @@ import { LandCategory } from '../types';
 import { createPlot, CreatePlotRequest } from '../services/plots';
 import { validateCadastralFormat } from '../utils/cadastral';
 import { formatPriceUAH, formatArea, sotkasToHectares } from '../utils/currency';
+import {
+  pickImageFromGallery,
+  takePhoto,
+  uploadMultipleListingImages,
+  ImagePickerResult,
+  formatFileSize,
+} from '../services/imageUploadService';
+import { uk } from '../localization/uk';
 
 interface AddPlotScreenProps {
   navigation: any;
@@ -50,6 +60,9 @@ export const AddPlotScreen: React.FC<AddPlotScreenProps> = ({ navigation }) => {
   const [latitude, setLatitude] = useState('');
   const [longitude, setLongitude] = useState('');
   const [cadastralNumber, setCadastralNumber] = useState('');
+  const [photos, setPhotos] = useState<ImagePickerResult[]>([]);
+  const [uploadingPhotos, setUploadingPhotos] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ uploaded: 0, total: 0 });
   
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -58,6 +71,33 @@ export const AddPlotScreen: React.FC<AddPlotScreenProps> = ({ navigation }) => {
   const totalPrice = areaSotkas && pricePerSotka 
     ? parseFloat(areaSotkas) * parseFloat(pricePerSotka) 
     : 0;
+
+  const handlePickPhotos = async () => {
+    try {
+      const selectedPhotos = await pickImageFromGallery(true);
+      if (selectedPhotos.length > 0) {
+        const newPhotos = [...photos, ...selectedPhotos].slice(0, 10);
+        setPhotos(newPhotos);
+      }
+    } catch (error: any) {
+      Alert.alert('Помилка', error.message || 'Не вдалося вибрати фото');
+    }
+  };
+
+  const handleTakePhoto = async () => {
+    try {
+      const photo = await takePhoto();
+      if (photo && photos.length < 10) {
+        setPhotos([...photos, photo]);
+      }
+    } catch (error: any) {
+      Alert.alert('Помилка', error.message || 'Не вдалося зробити фото');
+    }
+  };
+
+  const handleRemovePhoto = (index: number) => {
+    setPhotos(photos.filter((_, i) => i !== index));
+  };
 
   const validate = useCallback((): boolean => {
     const newErrors: Record<string, string> = {};
@@ -111,6 +151,20 @@ export const AddPlotScreen: React.FC<AddPlotScreenProps> = ({ navigation }) => {
     setLoading(true);
 
     try {
+      let photoUrls: string[] = [];
+      
+      if (photos.length > 0) {
+        setUploadingPhotos(true);
+        const tempListingId = `temp_${Date.now()}`;
+        const uploadResults = await uploadMultipleListingImages(
+          photos,
+          tempListingId,
+          (uploaded, total) => setUploadProgress({ uploaded, total })
+        );
+        photoUrls = uploadResults.map(r => r.url);
+        setUploadingPhotos(false);
+      }
+
       const plotData: CreatePlotRequest = {
         title: title.trim(),
         description: description.trim(),
@@ -124,7 +178,7 @@ export const AddPlotScreen: React.FC<AddPlotScreenProps> = ({ navigation }) => {
           address: address.trim(),
         },
         cadastralNumber: cadastralNumber.trim(),
-        photos: [],
+        photos: photoUrls,
         isInvestmentPlot: false,
         isCreditAvailable: false,
         category,
@@ -146,8 +200,60 @@ export const AddPlotScreen: React.FC<AddPlotScreenProps> = ({ navigation }) => {
       Alert.alert('Помилка', error.message || 'Не вдалося створити ділянку');
     } finally {
       setLoading(false);
+      setUploadingPhotos(false);
     }
   };
+
+  const renderPhotoPicker = () => (
+    <View style={styles.photoSection}>
+      <Text style={styles.label}>Фото ділянки (до 10)</Text>
+      
+      <View style={styles.photoGrid}>
+        {photos.map((photo, index) => (
+          <View key={index} style={styles.photoContainer}>
+            <Image source={{ uri: photo.uri }} style={styles.photoThumbnail} />
+            <TouchableOpacity
+              style={styles.removePhotoButton}
+              onPress={() => handleRemovePhoto(index)}
+            >
+              <Text style={styles.removePhotoText}>×</Text>
+            </TouchableOpacity>
+            {photo.fileSize && (
+              <Text style={styles.photoSize}>{formatFileSize(photo.fileSize)}</Text>
+            )}
+          </View>
+        ))}
+        
+        {photos.length < 10 && (
+          <View style={styles.addPhotoButtons}>
+            <TouchableOpacity
+              style={styles.addPhotoButton}
+              onPress={handlePickPhotos}
+            >
+              <Text style={styles.addPhotoIcon}>🖼️</Text>
+              <Text style={styles.addPhotoText}>Галерея</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.addPhotoButton}
+              onPress={handleTakePhoto}
+            >
+              <Text style={styles.addPhotoIcon}>📷</Text>
+              <Text style={styles.addPhotoText}>Камера</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+      
+      {uploadingPhotos && (
+        <View style={styles.uploadProgress}>
+          <ActivityIndicator size="small" color={theme.colors.primary} />
+          <Text style={styles.uploadProgressText}>
+            Завантаження {uploadProgress.uploaded}/{uploadProgress.total}...
+          </Text>
+        </View>
+      )}
+    </View>
+  );
 
   const renderCategoryPicker = () => (
     <View style={styles.pickerContainer}>
@@ -326,6 +432,8 @@ export const AddPlotScreen: React.FC<AddPlotScreenProps> = ({ navigation }) => {
               autoCapitalize="characters"
             />
 
+            {renderPhotoPicker()}
+
             <View style={styles.submitContainer}>
               <Button
                 title="Створити оголошення"
@@ -476,5 +584,86 @@ const styles = StyleSheet.create({
     color: theme.colors.textMuted,
     fontSize: theme.fontSize.sm,
     textAlign: 'center',
+  },
+  photoSection: {
+    marginTop: theme.spacing.md,
+  },
+  photoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
+  photoContainer: {
+    position: 'relative',
+    width: 80,
+    height: 80,
+  },
+  photoThumbnail: {
+    width: 80,
+    height: 80,
+    borderRadius: theme.borderRadius.sm,
+  },
+  removePhotoButton: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: theme.colors.error,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  removePhotoText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  photoSize: {
+    position: 'absolute',
+    bottom: 2,
+    left: 2,
+    right: 2,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    color: '#fff',
+    fontSize: 8,
+    textAlign: 'center',
+    borderBottomLeftRadius: theme.borderRadius.sm,
+    borderBottomRightRadius: theme.borderRadius.sm,
+    paddingVertical: 2,
+  },
+  addPhotoButtons: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  addPhotoButton: {
+    width: 80,
+    height: 80,
+    borderRadius: theme.borderRadius.sm,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addPhotoIcon: {
+    fontSize: 24,
+    marginBottom: 4,
+  },
+  addPhotoText: {
+    color: theme.colors.textMuted,
+    fontSize: 10,
+  },
+  uploadProgress: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: theme.spacing.sm,
+    gap: theme.spacing.sm,
+  },
+  uploadProgressText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
   },
 });
