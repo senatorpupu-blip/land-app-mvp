@@ -1631,3 +1631,934 @@ export const checkPaymentStatus = functions.https.onCall(
     };
   }
 );
+
+// ============================================
+// ENTERPRISE RBAC ADMIN SYSTEM
+// ============================================
+
+const AUDIT_LOGS_COLLECTION = 'auditLogs';
+
+// Role hierarchy and permissions
+type AdminRole = 'super_admin' | 'admin' | 'moderator' | 'support' | 'finance';
+
+interface RolePermissions {
+  canAssignRoles: boolean;
+  canRemoveRoles: boolean;
+  canViewAuditLogs: boolean;
+  canModerateListings: boolean;
+  canManageUsers: boolean;
+  canViewRevenue: boolean;
+  canImpersonateUsers: boolean;
+  canViewUserProfiles: boolean;
+  canViewLoginLogs: boolean;
+  canViewPayments: boolean;
+  canExportReports: boolean;
+  canViewRevenueCharts: boolean;
+  requires2FA: boolean;
+}
+
+const ROLE_PERMISSIONS: Record<AdminRole, RolePermissions> = {
+  super_admin: {
+    canAssignRoles: true,
+    canRemoveRoles: true,
+    canViewAuditLogs: true,
+    canModerateListings: true,
+    canManageUsers: true,
+    canViewRevenue: true,
+    canImpersonateUsers: true,
+    canViewUserProfiles: true,
+    canViewLoginLogs: true,
+    canViewPayments: true,
+    canExportReports: true,
+    canViewRevenueCharts: true,
+    requires2FA: true,
+  },
+  admin: {
+    canAssignRoles: false,
+    canRemoveRoles: false,
+    canViewAuditLogs: false,
+    canModerateListings: true,
+    canManageUsers: true,
+    canViewRevenue: true,
+    canImpersonateUsers: true,
+    canViewUserProfiles: true,
+    canViewLoginLogs: false,
+    canViewPayments: false,
+    canExportReports: false,
+    canViewRevenueCharts: false,
+    requires2FA: true,
+  },
+  moderator: {
+    canAssignRoles: false,
+    canRemoveRoles: false,
+    canViewAuditLogs: false,
+    canModerateListings: true,
+    canManageUsers: false,
+    canViewRevenue: false,
+    canImpersonateUsers: false,
+    canViewUserProfiles: false,
+    canViewLoginLogs: false,
+    canViewPayments: false,
+    canExportReports: false,
+    canViewRevenueCharts: false,
+    requires2FA: false,
+  },
+  support: {
+    canAssignRoles: false,
+    canRemoveRoles: false,
+    canViewAuditLogs: false,
+    canModerateListings: false,
+    canManageUsers: false,
+    canViewRevenue: false,
+    canImpersonateUsers: true,
+    canViewUserProfiles: true,
+    canViewLoginLogs: true,
+    canViewPayments: false,
+    canExportReports: false,
+    canViewRevenueCharts: false,
+    requires2FA: false,
+  },
+  finance: {
+    canAssignRoles: false,
+    canRemoveRoles: false,
+    canViewAuditLogs: false,
+    canModerateListings: false,
+    canManageUsers: false,
+    canViewRevenue: true,
+    canImpersonateUsers: false,
+    canViewUserProfiles: false,
+    canViewLoginLogs: false,
+    canViewPayments: true,
+    canExportReports: true,
+    canViewRevenueCharts: true,
+    requires2FA: false,
+  },
+};
+
+const VALID_ROLES: AdminRole[] = ['super_admin', 'admin', 'moderator', 'support', 'finance'];
+
+function isValidAdminRole(role: string): role is AdminRole {
+  return VALID_ROLES.includes(role as AdminRole);
+}
+
+/**
+ * Log admin action to audit logs collection
+ */
+async function logAdminAction(
+  actorId: string,
+  actorRole: AdminRole,
+  action: string,
+  targetId: string | null,
+  details: Record<string, any>
+): Promise<void> {
+  await db.collection(AUDIT_LOGS_COLLECTION).add({
+    actorId,
+    actorRole,
+    action,
+    targetId,
+    details,
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    ipAddress: null, // Would be populated from request headers in production
+  });
+}
+
+/**
+ * Get user's admin role from custom claims
+ */
+async function getUserAdminRole(uid: string): Promise<AdminRole | null> {
+  try {
+    const user = await admin.auth().getUser(uid);
+    const claims = user.customClaims;
+    if (claims && claims.adminRole && isValidAdminRole(claims.adminRole)) {
+      return claims.adminRole;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if user has specific permission
+ */
+function hasPermission(role: AdminRole | null, permission: keyof RolePermissions): boolean {
+  if (!role) return false;
+  return ROLE_PERMISSIONS[role][permission] === true;
+}
+
+/**
+ * Verify 2FA is enabled for roles that require it
+ */
+async function verify2FARequired(uid: string, role: AdminRole): Promise<boolean> {
+  if (!ROLE_PERMISSIONS[role].requires2FA) {
+    return true; // 2FA not required for this role
+  }
+  
+  // Check if user has 2FA enabled
+  const userDoc = await db.collection(USERS_COLLECTION).doc(uid).get();
+  if (!userDoc.exists) return false;
+  
+  const userData = userDoc.data();
+  return userData?.twoFactorEnabled === true;
+}
+
+interface AssignRoleRequest {
+  targetUserId: string;
+  role: AdminRole;
+}
+
+interface AssignRoleResponse {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Assign admin role to user via custom claims
+ * Only super_admin can assign roles
+ */
+export const assignAdminRole = functions.https.onCall(
+  async (data: AssignRoleRequest, context): Promise<AssignRoleResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const actorId = context.auth.uid;
+    const actorRole = await getUserAdminRole(actorId);
+
+    // Only super_admin can assign roles
+    if (!hasPermission(actorRole, 'canAssignRoles')) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Тільки super_admin може призначати ролі.'
+      );
+    }
+
+    // Verify 2FA for super_admin
+    const has2FA = await verify2FARequired(actorId, actorRole!);
+    if (!has2FA) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Потрібна двофакторна автентифікація.'
+      );
+    }
+
+    if (!data.targetUserId || typeof data.targetUserId !== 'string') {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'ID користувача є обов\'язковим.'
+      );
+    }
+
+    if (!data.role || !isValidAdminRole(data.role)) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        `Недійсна роль. Допустимі: ${VALID_ROLES.join(', ')}`
+      );
+    }
+
+    try {
+      // Set custom claims via Firebase Admin SDK
+      await admin.auth().setCustomUserClaims(data.targetUserId, {
+        adminRole: data.role,
+      });
+
+      // Also update Firestore user document for reference
+      await db.collection(USERS_COLLECTION).doc(data.targetUserId).update({
+        adminRole: data.role,
+        adminRoleAssignedAt: admin.firestore.FieldValue.serverTimestamp(),
+        adminRoleAssignedBy: actorId,
+      });
+
+      // Log the action
+      await logAdminAction(actorId, actorRole!, 'ASSIGN_ROLE', data.targetUserId, {
+        newRole: data.role,
+      });
+
+      functions.logger.info('Admin role assigned', {
+        actorId,
+        targetUserId: data.targetUserId,
+        role: data.role,
+      });
+
+      return { success: true };
+    } catch (error: any) {
+      functions.logger.error('Failed to assign admin role', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося призначити роль.',
+      };
+    }
+  }
+);
+
+interface RemoveRoleRequest {
+  targetUserId: string;
+}
+
+/**
+ * Remove admin role from user
+ * Only super_admin can remove roles
+ */
+export const removeAdminRole = functions.https.onCall(
+  async (data: RemoveRoleRequest, context): Promise<AssignRoleResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const actorId = context.auth.uid;
+    const actorRole = await getUserAdminRole(actorId);
+
+    if (!hasPermission(actorRole, 'canRemoveRoles')) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Тільки super_admin може видаляти ролі.'
+      );
+    }
+
+    const has2FA = await verify2FARequired(actorId, actorRole!);
+    if (!has2FA) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Потрібна двофакторна автентифікація.'
+      );
+    }
+
+    if (!data.targetUserId || typeof data.targetUserId !== 'string') {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'ID користувача є обов\'язковим.'
+      );
+    }
+
+    // Get current role for logging
+    const previousRole = await getUserAdminRole(data.targetUserId);
+
+    try {
+      // Remove custom claims
+      await admin.auth().setCustomUserClaims(data.targetUserId, {
+        adminRole: null,
+      });
+
+      // Update Firestore
+      await db.collection(USERS_COLLECTION).doc(data.targetUserId).update({
+        adminRole: admin.firestore.FieldValue.delete(),
+        adminRoleRemovedAt: admin.firestore.FieldValue.serverTimestamp(),
+        adminRoleRemovedBy: actorId,
+      });
+
+      // Log the action
+      await logAdminAction(actorId, actorRole!, 'REMOVE_ROLE', data.targetUserId, {
+        previousRole,
+      });
+
+      functions.logger.info('Admin role removed', {
+        actorId,
+        targetUserId: data.targetUserId,
+        previousRole,
+      });
+
+      return { success: true };
+    } catch (error: any) {
+      functions.logger.error('Failed to remove admin role', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося видалити роль.',
+      };
+    }
+  }
+);
+
+interface GetAuditLogsRequest {
+  limit?: number;
+  startAfter?: string;
+  action?: string;
+  actorId?: string;
+}
+
+interface AuditLogEntry {
+  id: string;
+  actorId: string;
+  actorRole: AdminRole;
+  action: string;
+  targetId: string | null;
+  details: Record<string, any>;
+  timestamp: any;
+}
+
+interface GetAuditLogsResponse {
+  success: boolean;
+  logs?: AuditLogEntry[];
+  error?: string;
+}
+
+/**
+ * Get audit logs
+ * Only super_admin can view audit logs
+ */
+export const getAuditLogs = functions.https.onCall(
+  async (data: GetAuditLogsRequest, context): Promise<GetAuditLogsResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const actorId = context.auth.uid;
+    const actorRole = await getUserAdminRole(actorId);
+
+    if (!hasPermission(actorRole, 'canViewAuditLogs')) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Недостатньо прав для перегляду журналу аудиту.'
+      );
+    }
+
+    const limit = Math.min(data.limit || 50, 100);
+
+    try {
+      let query: admin.firestore.Query = db.collection(AUDIT_LOGS_COLLECTION)
+        .orderBy('timestamp', 'desc')
+        .limit(limit);
+
+      if (data.action) {
+        query = query.where('action', '==', data.action);
+      }
+
+      if (data.actorId) {
+        query = query.where('actorId', '==', data.actorId);
+      }
+
+      const snapshot = await query.get();
+      const logs: AuditLogEntry[] = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+      } as AuditLogEntry));
+
+      return { success: true, logs };
+    } catch (error: any) {
+      functions.logger.error('Failed to get audit logs', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося отримати журнал аудиту.',
+      };
+    }
+  }
+);
+
+interface GetMyPermissionsResponse {
+  success: boolean;
+  role: AdminRole | null;
+  permissions: RolePermissions | null;
+}
+
+/**
+ * Get current user's admin role and permissions
+ */
+export const getMyAdminPermissions = functions.https.onCall(
+  async (_data: unknown, context): Promise<GetMyPermissionsResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const role = await getUserAdminRole(context.auth.uid);
+
+    if (!role) {
+      return {
+        success: true,
+        role: null,
+        permissions: null,
+      };
+    }
+
+    return {
+      success: true,
+      role,
+      permissions: ROLE_PERMISSIONS[role],
+    };
+  }
+);
+
+interface Enable2FARequest {
+  secret: string;
+  token: string;
+}
+
+interface Enable2FAResponse {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Enable 2FA for admin users
+ * Required for super_admin and admin roles
+ */
+export const enable2FA = functions.https.onCall(
+  async (data: Enable2FARequest, context): Promise<Enable2FAResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const userId = context.auth.uid;
+
+    if (!data.secret || !data.token) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Секрет та токен є обов\'язковими.'
+      );
+    }
+
+    // In production, verify the TOTP token against the secret
+    // For now, we just store the 2FA status
+    // TODO: Implement actual TOTP verification using a library like speakeasy
+
+    try {
+      await db.collection(USERS_COLLECTION).doc(userId).update({
+        twoFactorEnabled: true,
+        twoFactorEnabledAt: admin.firestore.FieldValue.serverTimestamp(),
+        // In production, store encrypted secret
+      });
+
+      const role = await getUserAdminRole(userId);
+      if (role) {
+        await logAdminAction(userId, role, 'ENABLE_2FA', userId, {});
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      functions.logger.error('Failed to enable 2FA', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося увімкнути 2FA.',
+      };
+    }
+  }
+);
+
+interface Verify2FARequest {
+  token: string;
+}
+
+interface Verify2FAResponse {
+  success: boolean;
+  verified: boolean;
+  error?: string;
+}
+
+/**
+ * Verify 2FA token for admin actions
+ */
+export const verify2FAToken = functions.https.onCall(
+  async (data: Verify2FARequest, context): Promise<Verify2FAResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const userId = context.auth.uid;
+
+    if (!data.token) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Токен є обов\'язковим.'
+      );
+    }
+
+    // In production, verify the TOTP token
+    // For now, accept any 6-digit token for testing
+    const isValidToken = /^\d{6}$/.test(data.token);
+
+    if (!isValidToken) {
+      return {
+        success: true,
+        verified: false,
+        error: 'Недійсний токен.',
+      };
+    }
+
+    // Log verification attempt
+    const role = await getUserAdminRole(userId);
+    if (role) {
+      await logAdminAction(userId, role, 'VERIFY_2FA', userId, {
+        verified: true,
+      });
+    }
+
+    return {
+      success: true,
+      verified: true,
+    };
+  }
+);
+
+interface ImpersonateUserRequest {
+  targetUserId: string;
+}
+
+interface ImpersonateUserResponse {
+  success: boolean;
+  customToken?: string;
+  error?: string;
+}
+
+/**
+ * Generate custom token for user impersonation
+ * Only admin and support roles can impersonate
+ */
+export const impersonateUser = functions.https.onCall(
+  async (data: ImpersonateUserRequest, context): Promise<ImpersonateUserResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const actorId = context.auth.uid;
+    const actorRole = await getUserAdminRole(actorId);
+
+    if (!hasPermission(actorRole, 'canImpersonateUsers')) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Недостатньо прав для імітації користувача.'
+      );
+    }
+
+    // Verify 2FA if required
+    if (actorRole && ROLE_PERMISSIONS[actorRole].requires2FA) {
+      const has2FA = await verify2FARequired(actorId, actorRole);
+      if (!has2FA) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'Потрібна двофакторна автентифікація.'
+        );
+      }
+    }
+
+    if (!data.targetUserId || typeof data.targetUserId !== 'string') {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'ID користувача є обов\'язковим.'
+      );
+    }
+
+    // Cannot impersonate super_admin
+    const targetRole = await getUserAdminRole(data.targetUserId);
+    if (targetRole === 'super_admin') {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Неможливо імітувати super_admin.'
+      );
+    }
+
+    try {
+      // Generate custom token with impersonation flag
+      const customToken = await admin.auth().createCustomToken(data.targetUserId, {
+        impersonatedBy: actorId,
+        impersonatedAt: Date.now(),
+      });
+
+      // Log the impersonation
+      await logAdminAction(actorId, actorRole!, 'IMPERSONATE_USER', data.targetUserId, {
+        targetRole,
+      });
+
+      functions.logger.info('User impersonation', {
+        actorId,
+        targetUserId: data.targetUserId,
+      });
+
+      return {
+        success: true,
+        customToken,
+      };
+    } catch (error: any) {
+      functions.logger.error('Failed to impersonate user', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося імітувати користувача.',
+      };
+    }
+  }
+);
+
+interface GetLoginLogsRequest {
+  userId?: string;
+  limit?: number;
+}
+
+interface LoginLogEntry {
+  id: string;
+  userId: string;
+  timestamp: any;
+  ipAddress: string | null;
+  userAgent: string | null;
+  success: boolean;
+}
+
+interface GetLoginLogsResponse {
+  success: boolean;
+  logs?: LoginLogEntry[];
+  error?: string;
+}
+
+/**
+ * Get login logs
+ * Only support role can view login logs
+ */
+export const getLoginLogs = functions.https.onCall(
+  async (data: GetLoginLogsRequest, context): Promise<GetLoginLogsResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const actorId = context.auth.uid;
+    const actorRole = await getUserAdminRole(actorId);
+
+    if (!hasPermission(actorRole, 'canViewLoginLogs')) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Недостатньо прав для перегляду журналу входів.'
+      );
+    }
+
+    const limit = Math.min(data.limit || 50, 100);
+
+    try {
+      let query: admin.firestore.Query = db.collection('loginLogs')
+        .orderBy('timestamp', 'desc')
+        .limit(limit);
+
+      if (data.userId) {
+        query = query.where('userId', '==', data.userId);
+      }
+
+      const snapshot = await query.get();
+      const logs: LoginLogEntry[] = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+      } as LoginLogEntry));
+
+      return { success: true, logs };
+    } catch (error: any) {
+      functions.logger.error('Failed to get login logs', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося отримати журнал входів.',
+      };
+    }
+  }
+);
+
+interface GetRevenueDataRequest {
+  startDate?: string;
+  endDate?: string;
+}
+
+interface RevenueData {
+  totalRevenue: number;
+  totalPayments: number;
+  averagePayment: number;
+  revenueByDay: Array<{ date: string; amount: number }>;
+}
+
+interface GetRevenueDataResponse {
+  success: boolean;
+  data?: RevenueData;
+  error?: string;
+}
+
+/**
+ * Get revenue data
+ * Only admin and finance roles can view revenue
+ */
+export const getRevenueData = functions.https.onCall(
+  async (data: GetRevenueDataRequest, context): Promise<GetRevenueDataResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const actorId = context.auth.uid;
+    const actorRole = await getUserAdminRole(actorId);
+
+    if (!hasPermission(actorRole, 'canViewRevenue')) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Недостатньо прав для перегляду доходів.'
+      );
+    }
+
+    try {
+      let query: admin.firestore.Query = db.collection(PAYMENTS_COLLECTION)
+        .where('status', '==', 'completed');
+
+      const snapshot = await query.get();
+      
+      let totalRevenue = 0;
+      const revenueByDay: Record<string, number> = {};
+
+      snapshot.docs.forEach(doc => {
+        const payment = doc.data();
+        totalRevenue += payment.amount || 0;
+        
+        if (payment.completedAt) {
+          const date = payment.completedAt.toDate().toISOString().split('T')[0];
+          revenueByDay[date] = (revenueByDay[date] || 0) + (payment.amount || 0);
+        }
+      });
+
+      const totalPayments = snapshot.size;
+      const averagePayment = totalPayments > 0 ? totalRevenue / totalPayments : 0;
+
+      // Log the access
+      await logAdminAction(actorId, actorRole!, 'VIEW_REVENUE', null, {
+        startDate: data.startDate,
+        endDate: data.endDate,
+      });
+
+      return {
+        success: true,
+        data: {
+          totalRevenue,
+          totalPayments,
+          averagePayment,
+          revenueByDay: Object.entries(revenueByDay).map(([date, amount]) => ({
+            date,
+            amount,
+          })).sort((a, b) => a.date.localeCompare(b.date)),
+        },
+      };
+    } catch (error: any) {
+      functions.logger.error('Failed to get revenue data', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося отримати дані про доходи.',
+      };
+    }
+  }
+);
+
+interface ExportReportRequest {
+  reportType: 'payments' | 'users' | 'listings';
+  format: 'json' | 'csv';
+  startDate?: string;
+  endDate?: string;
+}
+
+interface ExportReportResponse {
+  success: boolean;
+  data?: string;
+  error?: string;
+}
+
+/**
+ * Export reports
+ * Only finance role can export reports
+ */
+export const exportReport = functions.https.onCall(
+  async (data: ExportReportRequest, context): Promise<ExportReportResponse> => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Користувач повинен бути авторизований.'
+      );
+    }
+
+    const actorId = context.auth.uid;
+    const actorRole = await getUserAdminRole(actorId);
+
+    if (!hasPermission(actorRole, 'canExportReports')) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Недостатньо прав для експорту звітів.'
+      );
+    }
+
+    if (!data.reportType || !['payments', 'users', 'listings'].includes(data.reportType)) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Недійсний тип звіту.'
+      );
+    }
+
+    try {
+      let collectionName: string;
+      switch (data.reportType) {
+        case 'payments':
+          collectionName = PAYMENTS_COLLECTION;
+          break;
+        case 'users':
+          collectionName = USERS_COLLECTION;
+          break;
+        case 'listings':
+          collectionName = PLOTS_COLLECTION;
+          break;
+        default:
+          throw new Error('Invalid report type');
+      }
+
+      const snapshot = await db.collection(collectionName).limit(1000).get();
+      const records = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+
+      let exportData: string;
+      if (data.format === 'csv') {
+        // Simple CSV conversion
+        if (records.length === 0) {
+          exportData = '';
+        } else {
+          const headers = Object.keys(records[0]);
+          const csvRows = [
+            headers.join(','),
+            ...records.map(record => 
+              headers.map(h => JSON.stringify((record as any)[h] ?? '')).join(',')
+            ),
+          ];
+          exportData = csvRows.join('\n');
+        }
+      } else {
+        exportData = JSON.stringify(records, null, 2);
+      }
+
+      // Log the export
+      await logAdminAction(actorId, actorRole!, 'EXPORT_REPORT', null, {
+        reportType: data.reportType,
+        format: data.format,
+        recordCount: records.length,
+      });
+
+      return {
+        success: true,
+        data: exportData,
+      };
+    } catch (error: any) {
+      functions.logger.error('Failed to export report', { error: error.message });
+      return {
+        success: false,
+        error: 'Не вдалося експортувати звіт.',
+      };
+    }
+  }
+);

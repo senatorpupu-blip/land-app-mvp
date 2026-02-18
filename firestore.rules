@@ -14,6 +14,33 @@ service cloud.firestore {
       return isAuthenticated() && getUserData().role == 'admin';
     }
     
+    // RBAC: Check if user has specific admin role via custom claims
+    // Note: Custom claims are set via Firebase Admin SDK in Cloud Functions
+    function hasAdminRole(role) {
+      return isAuthenticated() && 
+        request.auth.token.adminRole == role;
+    }
+    
+    function isSuperAdmin() {
+      return hasAdminRole('super_admin');
+    }
+    
+    function isAdminOrHigher() {
+      return hasAdminRole('super_admin') || hasAdminRole('admin');
+    }
+    
+    function isModeratorOrHigher() {
+      return hasAdminRole('super_admin') || hasAdminRole('admin') || hasAdminRole('moderator');
+    }
+    
+    function isFinance() {
+      return hasAdminRole('finance');
+    }
+    
+    function isSupport() {
+      return hasAdminRole('support');
+    }
+    
     function isSeller() {
       return isAuthenticated() && (getUserData().role == 'seller' || getUserData().role == 'admin');
     }
@@ -213,6 +240,22 @@ service cloud.firestore {
       
       // Only admin/manager can delete (soft delete via status='archived')
       allow delete: if isAdminOrManager();
+    }
+    
+    // Audit Logs collection (RBAC)
+    // Only super_admin can read audit logs
+    // Only Cloud Functions can write
+    match /auditLogs/{logId} {
+      allow read: if isSuperAdmin();
+      allow create, update, delete: if false;
+    }
+    
+    // Login Logs collection (RBAC)
+    // Support and super_admin can read login logs
+    // Only Cloud Functions can write
+    match /loginLogs/{logId} {
+      allow read: if isSuperAdmin() || isSupport();
+      allow create, update, delete: if false;
     }
   }
 }
