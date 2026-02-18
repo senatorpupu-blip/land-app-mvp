@@ -12,3 +12,4 @@ export { AdminScreen } from './AdminScreen';
 export { NewsListScreen } from './NewsListScreen';
 export { NewsDetailScreen } from './NewsDetailScreen';
 export { ContentManagementScreen } from './ContentManagementScreen';
+export { ProfileCompletionScreen } from './ProfileCompletionScreen';
