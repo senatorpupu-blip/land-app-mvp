@@ -74,6 +74,48 @@ src/
 └── utils/          # Utility functions
 ```
 
+## Google Maps Setup
+
+### 1. Enable APIs in Google Cloud Console
+
+Go to https://console.cloud.google.com and enable these APIs:
+
+1. **Maps SDK for iOS** - Required for iOS builds
+2. **Maps SDK for Android** - Required for Android builds
+3. **Places API** (optional) - For place search functionality
+4. **Geocoding API** (optional) - For address lookup
+
+### 2. Restrict API Key (Important for Production)
+
+Go to Google Cloud Console > APIs & Services > Credentials > Your API Key:
+
+**Application Restrictions:**
+- iOS apps: Add bundle identifier `com.landplots.app`
+- Android apps: Add package name `com.landplots.app` + SHA-1 fingerprint
+
+To get debug SHA-1 for Android:
+```bash
+cd android && ./gradlew signingReport
+```
+
+**API Restrictions:**
+- Restrict to: Maps SDK for iOS, Maps SDK for Android
+
+### 3. Configure in app.json
+
+The API key is already configured in `app.json`:
+- iOS: `expo.ios.config.googleMapsApiKey`
+- Android: `expo.android.config.googleMaps.apiKey`
+
+### 4. Rebuild Native App
+
+After changing the API key, rebuild the native app:
+```bash
+npx expo prebuild --clean
+npx expo run:ios
+npx expo run:android
+```
+
 ## Firebase Setup
 
 ### 1. Create Firebase Project

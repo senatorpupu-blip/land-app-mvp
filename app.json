@@ -13,7 +13,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.landplots.app",
+      "config": {
+        "googleMapsApiKey": "AIzaSyAvZDDnjykWfsdrPUB-ivuVvha5-o-BdmM"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -21,10 +25,24 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.landplots.app",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyAvZDDnjykWfsdrPUB-ivuVvha5-o-BdmM"
+        }
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location."
+        }
+      ]
+    ]
   }
 }
