@@ -76,11 +76,69 @@ src/
 
 ## Firebase Setup
 
-1. Create a new Firebase project at https://console.firebase.google.com
-2. Enable Phone Authentication in Authentication > Sign-in method
-3. Create a Firestore database
-4. Enable Storage
-5. Copy your web app config to the `.env` file
+### 1. Create Firebase Project
+
+1. Go to https://console.firebase.google.com
+2. Create a new project or use existing one
+3. Go to Project Settings > General > Your apps
+4. Add a Web app and copy the config values
+
+### 2. Configure Environment Variables
+
+Copy `.env.example` to `.env` and fill in your Firebase config:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your values:
+```
+EXPO_PUBLIC_FIREBASE_API_KEY=AIzaSy...
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=your-project
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=123456789
+EXPO_PUBLIC_FIREBASE_APP_ID=1:123456789:web:abc123
+```
+
+Note: Storage bucket can be either `*.appspot.com` (legacy) or `*.firebasestorage.app` (new format). Check your Firebase Console for the correct value.
+
+### 3. Enable Authentication Providers
+
+Go to Firebase Console > Authentication > Sign-in method and enable:
+
+1. **Email/Password** - Enable this provider
+2. **Phone** - Enable this provider (requires billing account for SMS)
+
+### 4. Deploy Firestore Rules and Indexes
+
+```bash
+firebase deploy --only firestore:rules,firestore:indexes
+```
+
+### 5. Deploy Storage Rules
+
+```bash
+firebase deploy --only storage
+```
+
+### 6. Deploy Cloud Functions (optional)
+
+```bash
+cd functions
+npm install
+firebase deploy --only functions
+```
+
+### Troubleshooting
+
+**auth/configuration-not-found**: Email/Password provider not enabled in Firebase Console.
+
+**auth/argument-error with phone auth**: Phone provider not enabled or reCAPTCHA issue. For Expo dev client, ensure you're using the correct Firebase Phone Auth flow.
+
+**storage/unknown**: Check that storageBucket in your `.env` matches the value in Firebase Console > Storage.
+
+**Firestore undefined error**: This has been fixed - the app now properly handles optional fields.
 
 ## MVP Scope
 

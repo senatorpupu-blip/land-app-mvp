@@ -200,18 +200,27 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   };
 
   const formatPhoneNumber = (text: string) => {
-    // Allow + at the beginning, then only digits
-    // This supports E.164 format like +380XXXXXXXXX
-    let cleaned = text;
+    // Clean input to digits only
+    const digits = text.replace(/\D/g, '');
     
-    // If text starts with +, preserve it and clean the rest
-    if (text.startsWith('+')) {
-      cleaned = '+' + text.slice(1).replace(/\D/g, '');
-    } else {
-      cleaned = text.replace(/\D/g, '');
+    // Auto-add +380 prefix for Ukrainian numbers
+    // If user enters digits starting with 0 (local format), convert to +380
+    // If user enters 380..., add + prefix
+    // Otherwise just store the digits and format for display
+    let formatted = digits;
+    
+    if (digits.startsWith('0') && digits.length > 1) {
+      // Local format: 0XX XXX XXXX -> +380 XX XXX XXXX
+      formatted = '+38' + digits;
+    } else if (digits.startsWith('380')) {
+      // Already has country code without +
+      formatted = '+' + digits;
+    } else if (digits.length > 0 && !digits.startsWith('380')) {
+      // Assume Ukrainian number, add +380 prefix
+      formatted = '+380' + digits;
     }
     
-    setPhoneNumber(cleaned);
+    setPhoneNumber(formatted);
   };
 
   const switchMode = (mode: AuthMode) => {
@@ -226,7 +235,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           <Input
             label="Номер телефону"
             placeholder="+380 XX XXX XXXX"
-            keyboardType="default"
+            keyboardType="phone-pad"
             value={phoneNumber}
             onChangeText={formatPhoneNumber}
             error={error}
