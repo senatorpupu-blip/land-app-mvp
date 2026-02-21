@@ -200,7 +200,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   };
 
   const formatPhoneNumber = (text: string) => {
-    const cleaned = text.replace(/\D/g, '');
+    // Allow + at the beginning, then only digits
+    // This supports E.164 format like +380XXXXXXXXX
+    let cleaned = text;
+    
+    // If text starts with +, preserve it and clean the rest
+    if (text.startsWith('+')) {
+      cleaned = '+' + text.slice(1).replace(/\D/g, '');
+    } else {
+      cleaned = text.replace(/\D/g, '');
+    }
+    
     setPhoneNumber(cleaned);
   };
 
@@ -216,7 +226,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           <Input
             label="Номер телефону"
             placeholder="+380 XX XXX XXXX"
-            keyboardType="phone-pad"
+            keyboardType="default"
             value={phoneNumber}
             onChangeText={formatPhoneNumber}
             error={error}

@@ -230,15 +230,25 @@ export const getOrCreateUser = async (
   const userDoc = await getDoc(userRef);
   
   if (!userDoc.exists()) {
-    const newUser = {
+    // Build user object, excluding undefined values to prevent Firestore error
+    // Firestore does not accept undefined values - use null or omit the field
+    const newUser: Record<string, unknown> = {
       id: userId,
-      phoneNumber: data.phoneNumber,
-      email: data.email,
       role: 'seller' as UserRole,
       isBlocked: false,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
+    
+    // Only add phoneNumber if defined
+    if (data.phoneNumber) {
+      newUser.phoneNumber = data.phoneNumber;
+    }
+    
+    // Only add email if defined
+    if (data.email) {
+      newUser.email = data.email;
+    }
     
     await setDoc(userRef, newUser);
     
