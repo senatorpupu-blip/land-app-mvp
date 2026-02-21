@@ -85,60 +85,83 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
     setLoading(true);
     setError('');
+    setSuccessMessage('');
+
+    // Step 1: Format phone number
+    console.log('[PhoneAuth] Step 1: Starting verification flow');
+    const formattedPhone = formatPhoneToE164(phoneNumber);
+    console.log('[PhoneAuth] Step 1: Phone formatted to:', formattedPhone);
+
+    // Step 2: Verify Firebase config
+    console.log('[PhoneAuth] Step 2: Checking Firebase config');
+    console.log('[PhoneAuth] Step 2: apiKey present:', !!firebaseConfig.apiKey);
+    console.log('[PhoneAuth] Step 2: projectId:', firebaseConfig.projectId);
+
+    // Step 3: Check reCAPTCHA verifier BEFORE calling signIn
+    console.log('[PhoneAuth] Step 3: Checking reCAPTCHA verifier');
+    if (!recaptchaVerifierRef.current) {
+      console.error('[PhoneAuth] Step 3: ERROR - reCAPTCHA verifier is NULL');
+      setError('reCAPTCHA не готовий. Перезавантажте додаток.');
+      setLoading(false);
+      return;
+    }
+    console.log('[PhoneAuth] Step 3: reCAPTCHA verifier exists:', !!recaptchaVerifierRef.current);
+
+    // Step 4: Create PhoneAuthProvider and call verifyPhoneNumber with timeout
+    console.log('[PhoneAuth] Step 4: Creating PhoneAuthProvider');
+    const phoneProvider = new PhoneAuthProvider(auth);
+
+    // Create a timeout promise (15 seconds)
+    const TIMEOUT_MS = 15000;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('TIMEOUT: reCAPTCHA не завершився за 15 секунд. Спробуйте ще раз.'));
+      }, TIMEOUT_MS);
+    });
 
     try {
-      // Format phone number to E.164 format
-      const formattedPhone = formatPhoneToE164(phoneNumber);
+      console.log('[PhoneAuth] Step 5: Calling verifyPhoneNumber (with 15s timeout)...');
       
-      // Debug logging - phone number
-      console.log('[PhoneAuth] Starting verification for:', formattedPhone, 'type:', typeof formattedPhone);
-      
-      // Debug logging - Firebase config
-      console.log('[PhoneAuth] Firebase apiKey present:', !!firebaseConfig.apiKey);
-      console.log('[PhoneAuth] Firebase projectId:', firebaseConfig.projectId);
-      
-      // Debug logging - reCAPTCHA verifier
-      console.log('[PhoneAuth] recaptchaVerifierRef.current exists:', !!recaptchaVerifierRef.current);
-      
-      if (!recaptchaVerifierRef.current) {
-        console.error('[PhoneAuth] ERROR: reCAPTCHA verifier not mounted');
-        throw new Error('Помилка ініціалізації reCAPTCHA. Перезавантажте додаток.');
-      }
-      
-      // Use PhoneAuthProvider for native Expo builds
-      console.log('[PhoneAuth] Creating PhoneAuthProvider...');
-      const phoneProvider = new PhoneAuthProvider(auth);
-      
-      console.log('[PhoneAuth] Calling verifyPhoneNumber...');
-      const verId = await phoneProvider.verifyPhoneNumber(
-        formattedPhone,
-        recaptchaVerifierRef.current
-      );
-      
-      console.log('[PhoneAuth] SUCCESS - verificationId received:', verId ? 'yes' : 'no');
+      // Race between the actual call and timeout
+      const verId = await Promise.race([
+        phoneProvider.verifyPhoneNumber(formattedPhone, recaptchaVerifierRef.current),
+        timeoutPromise
+      ]);
+
+      console.log('[PhoneAuth] Step 6: SUCCESS - verificationId received');
       setVerificationId(verId);
       setPhoneStep('otp');
       setSuccessMessage('Код підтвердження надіслано на ваш телефон');
     } catch (err: any) {
-      console.error('[PhoneAuth] ERROR:', err.code, err.message, err);
-      
+      console.error('[PhoneAuth] ERROR at step 5/6:', err.code || 'no-code', err.message, err);
+
+      // Handle timeout error
+      if (err.message?.includes('TIMEOUT')) {
+        setError('reCAPTCHA не завершився. Перевірте інтернет та спробуйте ще раз.');
+      }
       // Handle specific Firebase Phone Auth errors
-      if (err.code === 'auth/invalid-phone-number') {
+      else if (err.code === 'auth/invalid-phone-number') {
         setError('Невірний формат номера телефону');
       } else if (err.code === 'auth/too-many-requests') {
         setError('Забагато спроб. Спробуйте пізніше');
       } else if (err.code === 'auth/quota-exceeded') {
         setError('Перевищено ліміт SMS. Спробуйте пізніше');
       } else if (err.code === 'auth/argument-error') {
-        setError('Помилка аргументів. Перевірте номер телефону та reCAPTCHA');
+        setError('Помилка аргументів. Перевірте номер телефону');
       } else if (err.code === 'auth/network-request-failed') {
         setError('Помилка мережі. Перевірте підключення до інтернету');
       } else if (err.code === 'auth/api-key-not-valid-please-pass-a-valid-api-key') {
         setError('Невірний API ключ Firebase. Зверніться до розробника');
+      } else if (err.code === 'auth/captcha-check-failed') {
+        setError('Помилка reCAPTCHA. Спробуйте ще раз.');
+      } else if (err.code === 'auth/missing-phone-number') {
+        setError('Номер телефону відсутній');
       } else {
         setError(err.message || 'Не вдалося надіслати код. Спробуйте ще раз.');
       }
     } finally {
+      // ALWAYS stop spinner
+      console.log('[PhoneAuth] Finally: Stopping loading spinner');
       setLoading(false);
     }
   };
@@ -430,10 +453,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   return (
     <SafeAreaView style={styles.container}>
       {/* Firebase reCAPTCHA Verifier Modal for phone auth */}
+      {/* Use visible reCAPTCHA on iOS/simulator for better debugging */}
       <FirebaseRecaptchaVerifierModal
         ref={recaptchaVerifierRef}
         firebaseConfig={firebaseConfig}
-        attemptInvisibleVerification={true}
+        attemptInvisibleVerification={Platform.OS === 'android'}
       />
       
       <KeyboardAvoidingView 
