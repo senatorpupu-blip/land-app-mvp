@@ -48,6 +48,14 @@
         {
           "googleMapsApiKey": "AIzaSyAvZDDnjykWfsdrPUB-ivuVvha5-o-BdmM"
         }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          }
+        }
       ]
     ]
   }
