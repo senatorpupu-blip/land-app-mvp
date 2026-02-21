@@ -13,12 +13,15 @@ import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { PhoneAuthProvider, signInWithCredential } from 'firebase/auth';
 import { theme } from '../config/theme';
 import { Input, Button } from '../components';
-import app, { auth } from '../config/firebase';
+import app, { auth, getFirebaseConfig } from '../config/firebase';
 import { 
   verifyPhoneCode,
   clearPhoneAuthState,
   getOrCreateUser
 } from '../services/auth';
+
+// Get Firebase config for reCAPTCHA modal
+const firebaseConfig = getFirebaseConfig();
 
 type AuthMode = 'phone' | 'email-signin' | 'email-signup';
 type PhoneStep = 'phone' | 'otp';
@@ -52,6 +55,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   
   // Verification ID for phone auth
   const [verificationId, setVerificationId] = useState<string | null>(null);
+  
+  // Log Firebase config on component mount for debugging
+  useEffect(() => {
+    console.log('[LoginScreen] Component mounted');
+    console.log('[LoginScreen] Firebase apiKey present:', !!firebaseConfig.apiKey);
+    console.log('[LoginScreen] Firebase projectId:', firebaseConfig.projectId);
+    console.log('[LoginScreen] Platform:', Platform.OS);
+  }, []);
 
   const resetForm = () => {
     setPhoneNumber('');
@@ -66,6 +77,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   };
 
   const handleSendVerificationCode = async () => {
+    // Validate phone number
     if (!phoneNumber || phoneNumber.length < 10) {
       setError('Введіть коректний номер телефону');
       return;
@@ -78,25 +90,37 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       // Format phone number to E.164 format
       const formattedPhone = formatPhoneToE164(phoneNumber);
       
-      // Debug logging as requested
-      console.log('Phone auth - phoneNumber:', formattedPhone, 'type:', typeof formattedPhone);
+      // Debug logging - phone number
+      console.log('[PhoneAuth] Starting verification for:', formattedPhone, 'type:', typeof formattedPhone);
+      
+      // Debug logging - Firebase config
+      console.log('[PhoneAuth] Firebase apiKey present:', !!firebaseConfig.apiKey);
+      console.log('[PhoneAuth] Firebase projectId:', firebaseConfig.projectId);
+      
+      // Debug logging - reCAPTCHA verifier
+      console.log('[PhoneAuth] recaptchaVerifierRef.current exists:', !!recaptchaVerifierRef.current);
       
       if (!recaptchaVerifierRef.current) {
-        throw new Error('Помилка ініціалізації reCAPTCHA');
+        console.error('[PhoneAuth] ERROR: reCAPTCHA verifier not mounted');
+        throw new Error('Помилка ініціалізації reCAPTCHA. Перезавантажте додаток.');
       }
       
       // Use PhoneAuthProvider for native Expo builds
+      console.log('[PhoneAuth] Creating PhoneAuthProvider...');
       const phoneProvider = new PhoneAuthProvider(auth);
+      
+      console.log('[PhoneAuth] Calling verifyPhoneNumber...');
       const verId = await phoneProvider.verifyPhoneNumber(
         formattedPhone,
         recaptchaVerifierRef.current
       );
       
+      console.log('[PhoneAuth] SUCCESS - verificationId received:', verId ? 'yes' : 'no');
       setVerificationId(verId);
       setPhoneStep('otp');
       setSuccessMessage('Код підтвердження надіслано на ваш телефон');
     } catch (err: any) {
-      console.error('Phone auth error:', err.code, err.message);
+      console.error('[PhoneAuth] ERROR:', err.code, err.message, err);
       
       // Handle specific Firebase Phone Auth errors
       if (err.code === 'auth/invalid-phone-number') {
@@ -107,6 +131,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         setError('Перевищено ліміт SMS. Спробуйте пізніше');
       } else if (err.code === 'auth/argument-error') {
         setError('Помилка аргументів. Перевірте номер телефону та reCAPTCHA');
+      } else if (err.code === 'auth/network-request-failed') {
+        setError('Помилка мережі. Перевірте підключення до інтернету');
+      } else if (err.code === 'auth/api-key-not-valid-please-pass-a-valid-api-key') {
+        setError('Невірний API ключ Firebase. Зверніться до розробника');
       } else {
         setError(err.message || 'Не вдалося надіслати код. Спробуйте ще раз.');
       }
@@ -404,7 +432,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       {/* Firebase reCAPTCHA Verifier Modal for phone auth */}
       <FirebaseRecaptchaVerifierModal
         ref={recaptchaVerifierRef}
-        firebaseConfig={app.options}
+        firebaseConfig={firebaseConfig}
         attemptInvisibleVerification={true}
       />
       
