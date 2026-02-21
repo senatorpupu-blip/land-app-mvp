@@ -4,15 +4,31 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { getFunctions } from 'firebase/functions';
 
-// Firebase configuration - replace with your own config
+// Firebase configuration
+// Values can be overridden via EXPO_PUBLIC_FIREBASE_* environment variables
 const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || 'YOUR_API_KEY',
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || 'YOUR_AUTH_DOMAIN',
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || 'YOUR_PROJECT_ID',
-  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || 'YOUR_STORAGE_BUCKET',
-  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || 'YOUR_MESSAGING_SENDER_ID',
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || 'YOUR_APP_ID',
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || 'AIzaSyAPPH-wHzdgaSwoN5D0XIFvFcO6ueaPEyE',
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || 'land-plots-app.firebaseapp.com',
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || 'land-plots-app',
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || 'land-plots-app.firebasestorage.app',
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '697898943941',
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || '1:697898943941:web:5148e4909d5fd8e0f3b7ac',
 };
+
+// Runtime guard: ensure Firebase config is valid
+if (!firebaseConfig.apiKey || firebaseConfig.apiKey.startsWith('YOUR_')) {
+  throw new Error(
+    'Firebase API key is missing or invalid. ' +
+    'Please set EXPO_PUBLIC_FIREBASE_API_KEY in your .env file or check firebase.ts config.'
+  );
+}
+
+if (!firebaseConfig.projectId || firebaseConfig.projectId.startsWith('YOUR_')) {
+  throw new Error(
+    'Firebase project ID is missing or invalid. ' +
+    'Please set EXPO_PUBLIC_FIREBASE_PROJECT_ID in your .env file or check firebase.ts config.'
+  );
+}
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
