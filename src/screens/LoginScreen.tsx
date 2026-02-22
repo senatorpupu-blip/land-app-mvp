@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { 
   View, 
   Text, 
@@ -9,22 +9,14 @@ import {
   TouchableOpacity,
   ScrollView,
 } from 'react-native';
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
-import { PhoneAuthProvider, signInWithCredential } from 'firebase/auth';
 import { theme } from '../config/theme';
 import { Input, Button } from '../components';
-import app, { auth, getFirebaseConfig } from '../config/firebase';
-import { 
-  verifyPhoneCode,
-  clearPhoneAuthState,
-  getOrCreateUser
-} from '../services/auth';
 
-// Get Firebase config for reCAPTCHA modal
-const firebaseConfig = getFirebaseConfig();
+// DEV MODE: In development, this screen is bypassed entirely
+// The AuthContext automatically logs in with a mock user
+// This screen is only shown in production builds
 
-type AuthMode = 'phone' | 'email-signin' | 'email-signup';
-type PhoneStep = 'phone' | 'otp';
+type AuthMode = 'email-signin' | 'email-signup';
 
 interface LoginScreenProps {
   onEmailSignIn: (email: string, password: string) => Promise<void>;
@@ -37,11 +29,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   onEmailSignUp,
   onResetPassword,
 }) => {
-  const [authMode, setAuthMode] = useState<AuthMode>('phone');
-  const [phoneStep, setPhoneStep] = useState<PhoneStep>('phone');
+  const [authMode, setAuthMode] = useState<AuthMode>('email-signin');
   
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [verificationCode, setVerificationCode] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -49,179 +38,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
-  
-  // reCAPTCHA verifier reference for native phone auth
-  const recaptchaVerifierRef = useRef<FirebaseRecaptchaVerifierModal | null>(null);
-  
-  // Verification ID for phone auth
-  const [verificationId, setVerificationId] = useState<string | null>(null);
-  
-  // Log Firebase config on component mount for debugging
-  useEffect(() => {
-    console.log('[LoginScreen] Component mounted');
-    console.log('[LoginScreen] Firebase apiKey present:', !!firebaseConfig.apiKey);
-    console.log('[LoginScreen] Firebase projectId:', firebaseConfig.projectId);
-    console.log('[LoginScreen] Platform:', Platform.OS);
-  }, []);
 
   const resetForm = () => {
-    setPhoneNumber('');
-    setVerificationCode('');
     setEmail('');
     setPassword('');
     setConfirmPassword('');
     setError('');
     setSuccessMessage('');
-    setPhoneStep('phone');
-    clearPhoneAuthState();
-  };
-
-  const handleSendVerificationCode = async () => {
-    // Validate phone number
-    if (!phoneNumber || phoneNumber.length < 10) {
-      setError('Введіть коректний номер телефону');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-    setSuccessMessage('');
-
-    // Step 1: Format phone number
-    console.log('[PhoneAuth] Step 1: Starting verification flow');
-    const formattedPhone = formatPhoneToE164(phoneNumber);
-    console.log('[PhoneAuth] Step 1: Phone formatted to:', formattedPhone);
-
-    // Step 2: Verify Firebase config
-    console.log('[PhoneAuth] Step 2: Checking Firebase config');
-    console.log('[PhoneAuth] Step 2: apiKey present:', !!firebaseConfig.apiKey);
-    console.log('[PhoneAuth] Step 2: projectId:', firebaseConfig.projectId);
-
-    // Step 3: Check reCAPTCHA verifier BEFORE calling signIn
-    console.log('[PhoneAuth] Step 3: Checking reCAPTCHA verifier');
-    if (!recaptchaVerifierRef.current) {
-      console.error('[PhoneAuth] Step 3: ERROR - reCAPTCHA verifier is NULL');
-      setError('reCAPTCHA не готовий. Перезавантажте додаток.');
-      setLoading(false);
-      return;
-    }
-    console.log('[PhoneAuth] Step 3: reCAPTCHA verifier exists:', !!recaptchaVerifierRef.current);
-
-    // Step 4: Create PhoneAuthProvider and call verifyPhoneNumber with timeout
-    console.log('[PhoneAuth] Step 4: Creating PhoneAuthProvider');
-    const phoneProvider = new PhoneAuthProvider(auth);
-
-    // Create a timeout promise (15 seconds)
-    const TIMEOUT_MS = 15000;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        reject(new Error('TIMEOUT: reCAPTCHA не завершився за 15 секунд. Спробуйте ще раз.'));
-      }, TIMEOUT_MS);
-    });
-
-    try {
-      console.log('[PhoneAuth] Step 5: Calling verifyPhoneNumber (with 15s timeout)...');
-      
-      // Race between the actual call and timeout
-      const verId = await Promise.race([
-        phoneProvider.verifyPhoneNumber(formattedPhone, recaptchaVerifierRef.current),
-        timeoutPromise
-      ]);
-
-      console.log('[PhoneAuth] Step 6: SUCCESS - verificationId received');
-      setVerificationId(verId);
-      setPhoneStep('otp');
-      setSuccessMessage('Код підтвердження надіслано на ваш телефон');
-    } catch (err: any) {
-      console.error('[PhoneAuth] ERROR at step 5/6:', err.code || 'no-code', err.message, err);
-
-      // Handle timeout error
-      if (err.message?.includes('TIMEOUT')) {
-        setError('reCAPTCHA не завершився. Перевірте інтернет та спробуйте ще раз.');
-      }
-      // Handle specific Firebase Phone Auth errors
-      else if (err.code === 'auth/invalid-phone-number') {
-        setError('Невірний формат номера телефону');
-      } else if (err.code === 'auth/too-many-requests') {
-        setError('Забагато спроб. Спробуйте пізніше');
-      } else if (err.code === 'auth/quota-exceeded') {
-        setError('Перевищено ліміт SMS. Спробуйте пізніше');
-      } else if (err.code === 'auth/argument-error') {
-        setError('Помилка аргументів. Перевірте номер телефону');
-      } else if (err.code === 'auth/network-request-failed') {
-        setError('Помилка мережі. Перевірте підключення до інтернету');
-      } else if (err.code === 'auth/api-key-not-valid-please-pass-a-valid-api-key') {
-        setError('Невірний API ключ Firebase. Зверніться до розробника');
-      } else if (err.code === 'auth/captcha-check-failed') {
-        setError('Помилка reCAPTCHA. Спробуйте ще раз.');
-      } else if (err.code === 'auth/missing-phone-number') {
-        setError('Номер телефону відсутній');
-      } else {
-        setError(err.message || 'Не вдалося надіслати код. Спробуйте ще раз.');
-      }
-    } finally {
-      // ALWAYS stop spinner
-      console.log('[PhoneAuth] Finally: Stopping loading spinner');
-      setLoading(false);
-    }
-  };
-  
-  // Format phone number to E.164 format (+380XXXXXXXXX)
-  const formatPhoneToE164 = (phone: string): string => {
-    const digits = phone.replace(/\D/g, '');
-    
-    if (digits.startsWith('0')) {
-      return '+38' + digits;
-    }
-    if (digits.startsWith('38')) {
-      return '+' + digits;
-    }
-    if (digits.length >= 10 && !digits.startsWith('+')) {
-      return '+' + digits;
-    }
-    return phone.startsWith('+') ? phone : '+380' + digits;
-  };
-
-  const handleVerifyCode = async () => {
-    if (!verificationCode || verificationCode.length !== 6) {
-      setError('Введіть 6-значний код');
-      return;
-    }
-    
-    if (!verificationId) {
-      setError('Спочатку отримайте код підтвердження');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-
-    try {
-      // Create credential with verification ID and code
-      const credential = PhoneAuthProvider.credential(verificationId, verificationCode);
-      
-      // Sign in with the credential
-      const userCredential = await signInWithCredential(auth, credential);
-      
-      // Create or update user document in Firestore
-      await getOrCreateUser(userCredential.user.uid, { 
-        phoneNumber: userCredential.user.phoneNumber || undefined 
-      });
-      
-      // Auth state change will be handled by AuthContext
-    } catch (err: any) {
-      console.error('Verify code error:', err.code, err.message);
-      
-      if (err.code === 'auth/invalid-verification-code') {
-        setError('Невірний код підтвердження');
-      } else if (err.code === 'auth/code-expired') {
-        setError('Код підтвердження закінчився. Отримайте новий код');
-      } else {
-        setError(err.message || 'Невірний код. Спробуйте ще раз.');
-      }
-    } finally {
-      setLoading(false);
-    }
   };
 
   const handleEmailSignIn = async () => {
@@ -236,6 +59,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     try {
       await onEmailSignIn(email, password);
     } catch (err: any) {
+      console.error('[LoginScreen] Sign in error:', err.code, err.message);
       setError(err.message || 'Помилка входу');
     } finally {
       setLoading(false);
@@ -264,6 +88,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     try {
       await onEmailSignUp(email, password);
     } catch (err: any) {
+      console.error('[LoginScreen] Sign up error:', err.code, err.message);
       setError(err.message || 'Помилка реєстрації');
     } finally {
       setLoading(false);
@@ -284,104 +109,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       await onResetPassword(email);
       setSuccessMessage('Лист для скидання пароля надіслано на вашу пошту');
     } catch (err: any) {
+      console.error('[LoginScreen] Reset password error:', err.code, err.message);
       setError(err.message || 'Помилка скидання пароля');
     } finally {
       setLoading(false);
     }
   };
 
-  const formatPhoneNumber = (text: string) => {
-    // Clean input to digits only
-    const digits = text.replace(/\D/g, '');
-    
-    // Auto-add +380 prefix for Ukrainian numbers
-    // If user enters digits starting with 0 (local format), convert to +380
-    // If user enters 380..., add + prefix
-    // Otherwise just store the digits and format for display
-    let formatted = digits;
-    
-    if (digits.startsWith('0') && digits.length > 1) {
-      // Local format: 0XX XXX XXXX -> +380 XX XXX XXXX
-      formatted = '+38' + digits;
-    } else if (digits.startsWith('380')) {
-      // Already has country code without +
-      formatted = '+' + digits;
-    } else if (digits.length > 0 && !digits.startsWith('380')) {
-      // Assume Ukrainian number, add +380 prefix
-      formatted = '+380' + digits;
-    }
-    
-    setPhoneNumber(formatted);
-  };
-
   const switchMode = (mode: AuthMode) => {
     resetForm();
     setAuthMode(mode);
   };
-
-  const renderPhoneAuth = () => (
-    <>
-      {phoneStep === 'phone' ? (
-        <>
-          <Input
-            label="Номер телефону"
-            placeholder="+380 XX XXX XXXX"
-            keyboardType="phone-pad"
-            value={phoneNumber}
-            onChangeText={formatPhoneNumber}
-            error={error}
-            autoFocus
-          />
-          {successMessage ? (
-            <Text style={styles.successMessage}>{successMessage}</Text>
-          ) : null}
-          <Button
-            title="Надіслати код"
-            onPress={handleSendVerificationCode}
-            loading={loading}
-            disabled={!phoneNumber}
-          />
-          {Platform.OS === 'web' && (
-            <View nativeID="recaptcha-container" />
-          )}
-        </>
-      ) : (
-        <>
-          <Input
-            label="Код підтвердження"
-            placeholder="Введіть 6-значний код з SMS"
-            keyboardType="number-pad"
-            maxLength={6}
-            value={verificationCode}
-            onChangeText={setVerificationCode}
-            error={error}
-            autoFocus
-          />
-          {successMessage ? (
-            <Text style={styles.successMessage}>{successMessage}</Text>
-          ) : null}
-          <Button
-            title="Підтвердити"
-            onPress={handleVerifyCode}
-            loading={loading}
-            disabled={verificationCode.length !== 6}
-          />
-          <Button
-            title="Змінити номер"
-            variant="outline"
-            onPress={() => {
-              setPhoneStep('phone');
-              setVerificationCode('');
-              setError('');
-              setSuccessMessage('');
-              clearPhoneAuthState();
-            }}
-            style={styles.secondaryButton}
-          />
-        </>
-      )}
-    </>
-  );
 
   const renderEmailSignIn = () => (
     <>
@@ -452,14 +190,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Firebase reCAPTCHA Verifier Modal for phone auth */}
-      {/* Use visible reCAPTCHA on iOS/simulator for better debugging */}
-      <FirebaseRecaptchaVerifierModal
-        ref={recaptchaVerifierRef}
-        firebaseConfig={firebaseConfig}
-        attemptInvisibleVerification={Platform.OS === 'android'}
-      />
-      
       <KeyboardAvoidingView 
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
@@ -471,55 +201,31 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           <View style={styles.header}>
             <Text style={styles.title}>Земельні ділянки</Text>
             <Text style={styles.subtitle}>
-              {authMode === 'phone' && phoneStep === 'phone' && 'Введіть номер телефону для входу'}
-              {authMode === 'phone' && phoneStep === 'otp' && 'Введіть код з SMS'}
               {authMode === 'email-signin' && 'Увійдіть за допомогою пошти'}
               {authMode === 'email-signup' && 'Створіть новий акаунт'}
             </Text>
           </View>
 
-          <View style={styles.tabs}>
-            <TouchableOpacity 
-              style={[styles.tab, authMode === 'phone' && styles.tabActive]}
-              onPress={() => switchMode('phone')}
-            >
-              <Text style={[styles.tabText, authMode === 'phone' && styles.tabTextActive]}>
-                Телефон
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={[styles.tab, (authMode === 'email-signin' || authMode === 'email-signup') && styles.tabActive]}
-              onPress={() => switchMode('email-signin')}
-            >
-              <Text style={[styles.tabText, (authMode === 'email-signin' || authMode === 'email-signup') && styles.tabTextActive]}>
-                Пошта
-              </Text>
-            </TouchableOpacity>
-          </View>
-
           <View style={styles.form}>
-            {authMode === 'phone' && renderPhoneAuth()}
             {authMode === 'email-signin' && renderEmailSignIn()}
             {authMode === 'email-signup' && renderEmailSignUp()}
           </View>
 
-          {(authMode === 'email-signin' || authMode === 'email-signup') && (
-            <View style={styles.switchAuth}>
-              {authMode === 'email-signin' ? (
-                <TouchableOpacity onPress={() => switchMode('email-signup')}>
-                  <Text style={styles.switchAuthText}>
-                    Немає акаунту? <Text style={styles.switchAuthLink}>Зареєструватися</Text>
-                  </Text>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity onPress={() => switchMode('email-signin')}>
-                  <Text style={styles.switchAuthText}>
-                    Вже є акаунт? <Text style={styles.switchAuthLink}>Увійти</Text>
-                  </Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          )}
+          <View style={styles.switchAuth}>
+            {authMode === 'email-signin' ? (
+              <TouchableOpacity onPress={() => switchMode('email-signup')}>
+                <Text style={styles.switchAuthText}>
+                  Немає акаунту? <Text style={styles.switchAuthLink}>Зареєструватися</Text>
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity onPress={() => switchMode('email-signin')}>
+                <Text style={styles.switchAuthText}>
+                  Вже є акаунт? <Text style={styles.switchAuthLink}>Увійти</Text>
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -553,35 +259,8 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     fontSize: theme.fontSize.md,
   },
-  tabs: {
-    flexDirection: 'row',
-    marginBottom: theme.spacing.lg,
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.borderRadius.md,
-    padding: 4,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: theme.spacing.sm,
-    alignItems: 'center',
-    borderRadius: theme.borderRadius.sm,
-  },
-  tabActive: {
-    backgroundColor: theme.colors.primary,
-  },
-  tabText: {
-    color: theme.colors.textSecondary,
-    fontSize: theme.fontSize.md,
-    fontWeight: '500',
-  },
-  tabTextActive: {
-    color: theme.colors.text,
-  },
   form: {
     gap: theme.spacing.md,
-  },
-  secondaryButton: {
-    marginTop: theme.spacing.sm,
   },
   forgotPassword: {
     alignItems: 'center',
