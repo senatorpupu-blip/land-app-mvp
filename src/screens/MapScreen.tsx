@@ -9,7 +9,7 @@ import {
   Platform,
   ActivityIndicator
 } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE, PROVIDER_DEFAULT, Region } from 'react-native-maps';
 import { theme } from '../config/theme';
 import { FilterModal } from '../components';
 import { LandPlot, PlotFilters } from '../types';
@@ -21,6 +21,10 @@ import {
 } from '../utils/mapUtils';
 import { formatPriceUAH, formatPricePerHectareUAH, calculatePricePerHectare } from '../utils/currency';
 import { uk } from '../localization/uk';
+
+// Google Maps configuration check
+const GOOGLE_MAPS_API_KEY = 'AIzaSyAvZDDnjykWfsdrPUB-ivuVvha5-o-BdmM';
+const USE_GOOGLE_MAPS = Platform.OS === 'android' || !!GOOGLE_MAPS_API_KEY;
 
 interface MapScreenProps {
   navigation: any;
@@ -43,9 +47,42 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
   const [regions, setRegions] = useState<string[]>([]);
   const [hasMore, setHasMore] = useState(true);
   
+  // Map state tracking
+  const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [useGoogleMaps, setUseGoogleMaps] = useState(USE_GOOGLE_MAPS);
+  
   const mapRef = useRef<MapView>(null);
   const mapServiceRef = useRef<MapService | null>(null);
   const hasInitialFit = useRef(false);
+
+  // Debug logging for map initialization
+  useEffect(() => {
+    console.log('[MapScreen] Component mounted');
+    console.log('[MapScreen] Platform:', Platform.OS);
+    console.log('[MapScreen] Google Maps API Key present:', !!GOOGLE_MAPS_API_KEY);
+    console.log('[MapScreen] Using Google Maps:', useGoogleMaps);
+  }, []);
+
+  // Handle map ready event
+  const handleMapReady = useCallback(() => {
+    console.log('[MapScreen] Map is ready');
+    setMapReady(true);
+    setMapError(null);
+  }, []);
+
+  // Handle map error - fallback to Apple Maps on iOS
+  const handleMapError = useCallback((error: any) => {
+    console.error('[MapScreen] Map error:', error);
+    setMapError('Map failed to load');
+    
+    // On iOS, if Google Maps fails, try falling back to Apple Maps
+    if (Platform.OS === 'ios' && useGoogleMaps) {
+      console.log('[MapScreen] Falling back to Apple Maps');
+      setUseGoogleMaps(false);
+      setMapError(null);
+    }
+  }, [useGoogleMaps]);
 
   useEffect(() => {
     const mapService = new MapService({
@@ -188,12 +225,40 @@ export const MapScreen: React.FC<MapScreenProps> = ({ navigation }) => {
       )}
 
       <View style={styles.mapContainer}>
+        {/* Map error fallback UI */}
+        {mapError && (
+          <View style={styles.mapErrorContainer}>
+            <Text style={styles.mapErrorText}>{mapError}</Text>
+            <TouchableOpacity 
+              style={styles.mapErrorRetryButton}
+              onPress={() => {
+                setMapError(null);
+                setMapReady(false);
+              }}
+            >
+              <Text style={styles.mapErrorRetryText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Map loading indicator */}
+        {!mapReady && !mapError && (
+          <View style={styles.mapLoadingContainer}>
+            <ActivityIndicator size="large" color={theme.colors.primary} />
+            <Text style={styles.mapLoadingText}>Loading map...</Text>
+          </View>
+        )}
+
         <MapView
           ref={mapRef}
           style={styles.map}
           initialRegion={INITIAL_REGION}
-          provider={PROVIDER_GOOGLE}
+          provider={useGoogleMaps ? PROVIDER_GOOGLE : PROVIDER_DEFAULT}
+          onMapReady={handleMapReady}
           onRegionChangeComplete={handleRegionChange}
+          showsUserLocation={false}
+          showsMyLocationButton={false}
+          toolbarEnabled={false}
         >
           {filteredPlots.map((plot) => (
             <Marker
@@ -506,6 +571,50 @@ const styles = StyleSheet.create({
   loadingText: {
     color: theme.colors.text,
     fontSize: theme.fontSize.md,
+    marginTop: theme.spacing.md,
+  },
+  mapErrorContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: theme.colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  mapErrorText: {
+    color: theme.colors.error,
+    fontSize: theme.fontSize.md,
+    marginBottom: theme.spacing.md,
+    textAlign: 'center',
+  },
+  mapErrorRetryButton: {
+    backgroundColor: theme.colors.primary,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.borderRadius.md,
+  },
+  mapErrorRetryText: {
+    color: theme.colors.text,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '600',
+  },
+  mapLoadingContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: theme.colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 5,
+  },
+  mapLoadingText: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
     marginTop: theme.spacing.md,
   },
 });
