@@ -1,8 +1,9 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { initializeAuth, getReactNativePersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { getFunctions } from 'firebase/functions';
+import ReactNativeAsyncStorage from '@react-native-async-storage/async-storage';
 
 // Firebase Web SDK configuration
 // These are the correct values for land-plots-app Firebase project
@@ -18,8 +19,13 @@ const firebaseConfig = {
 // Initialize Firebase - SINGLE initialization point for entire app
 const app = initializeApp(firebaseConfig);
 
-// Initialize services - all services use the same app instance
-export const auth = getAuth(app);
+// Initialize Auth with React Native persistence (AsyncStorage)
+// This ensures auth state persists between app sessions
+export const auth = initializeAuth(app, {
+  persistence: getReactNativePersistence(ReactNativeAsyncStorage),
+});
+
+// Initialize other services - all services use the same app instance
 export const db = getFirestore(app);
 export const storage = getStorage(app);
 export const functions = getFunctions(app);
